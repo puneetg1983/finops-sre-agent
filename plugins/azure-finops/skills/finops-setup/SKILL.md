@@ -1,6 +1,6 @@
 ---
 name: finops-setup
-description: Sets up, re-runs, or repairs the Azure FinOps pack on this agent end to end from chat. Use when the user says "Set up FinOps for me", "set up the FinOps agent", "install/configure/enable FinOps", "turn on cost anomaly alerts / FinOps reports", or asks why FinOps scheduled reports are not working. Grants the agent identity read-only cost roles on behalf of the signed-in user (OBO), creates or updates the seven FinOps scheduled tasks and six Live Reports, and validates with a first report. Asks no questions.
+description: Sets up, re-runs, or repairs the Azure FinOps pack on this agent end to end from chat. Use when the user says "Set up FinOps for me", "set up the FinOps agent", "install/configure/enable FinOps", "turn on cost anomaly alerts / FinOps reports", "refresh all FinOps reports", or asks why FinOps scheduled reports are not working. Grants the agent identity read-only cost roles on behalf of the signed-in user (OBO), creates or updates the seven FinOps scheduled tasks, and builds all six Live Reports immediately. Asks no questions.
 ---
 
 # FinOps setup
@@ -79,14 +79,32 @@ are updated instead of duplicated.
 Why `review` mode: tasks run on the main agent, which has write tools. In review mode, a write cannot
 execute unattended. FinOps runs are reads plus `SaveReport` of a static report, and neither needs approval.
 
-## Step 4: Validate
+## Step 4: Build all six Live Reports now
 
-Run the **cost-overview-report** `agentPrompt` from `plan.json` now, in this thread, following it
-exactly. It creates the first Live Report, "FinOps: Cost Overview".
-- If cost reads fail right after granting, wait about 2 minutes and retry once. Cost RBAC can take a
-  few minutes to apply.
-- If the roles are still missing (fallback case), skip validation and say the first report will
-  appear after the Owner runs the script.
+Don't make the user wait for the schedules. Tell the user: *"Building your 6 FinOps reports now. This
+takes a few minutes."* Then run, in this order, the `agentPrompt` of every `plan.json` task whose
+`liveReport` is non-empty, following each one exactly:
+
+1. `cost-overview-report` (also acts as the end-to-end check)
+2. `budget-status-report`
+3. `rightsizing-savings-report`
+4. `ai-spend-report`
+5. `cost-vs-reliability-report`
+6. `cost-optimization-report` (last: it rolls up the others)
+
+Rules:
+- Include tasks whose action is `unchanged`; the goal is a fresh set of reports.
+- If `cost-overview-report` fails because cost reads are denied right after granting, wait about 2
+  minutes and retry it once. Cost RBAC can take a few minutes to apply. If it still fails, skip the
+  remaining reports and say they will appear on their schedules.
+- If any other report fails, record the reason, continue with the next, and list it in the summary.
+  Its scheduled run will retry.
+- After each report, post one line: "✓ FinOps: Budget Status saved". Do not paste analysis
+  tables; the reports hold the content.
+- If the user asked for a quick setup ("just the overview", "skip the reports"), build only
+  `cost-overview-report`.
+- If the roles are still missing (fallback case), skip this step and say the reports will appear
+  after the Owner runs the script.
 
 ## Step 5: Summarize
 
@@ -96,7 +114,8 @@ exactly. It creates the first Live Report, "FinOps: Cost Overview".
 | Managed scopes | n subscriptions / resource groups / management groups |
 | Permissions | already in place / granted now (list) / pending Owner script (list) |
 | Scheduled tasks | created x, updated y, unchanged z, retired w |
-| Live Reports | "FinOps: Cost Overview" created now; 5 more appear after their first scheduled run |
+| Live Reports | 6 built now (list any that failed and why); open them under Operations Hub → Live Reports |
+| Report scope | the managed scopes above; cost outside them is excluded by design |
 
 Then add:
 - Schedules are UTC. Daily: anomaly 14:00, cost overview 14:30, budget status 16:00. Weekly on
@@ -104,6 +123,9 @@ Then add:
 - "Say **'send FinOps alerts to you@contoso.com'** or **'correlate FinOps anomalies with repo owner/repo'**
   to turn on email or GitHub correlation. Say **'create the FinOps subagent'** for a dedicated
   read-only FinOps assistant."
+- If every managed scope is a resource group, add: "Reports cover only these resource groups. To report
+  on a whole subscription, add it under **Settings → Managed resources**, then say 'Set up FinOps for
+  me' again."
 
 ## On request only
 

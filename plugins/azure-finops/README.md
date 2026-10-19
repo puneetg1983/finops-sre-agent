@@ -17,7 +17,7 @@ The agent then does the rest itself:
 | Discover | Reads its own resource: managed scopes, and the identity its Azure tools run as |
 | Permissions | Lists that identity's role assignments. If any are missing, it grants **Reader** on the agent and **Cost Management Reader** on each cost scope **on behalf of the signed-in user (OBO)**. The agent's own identity never holds rights to grant roles |
 | Tasks | Creates or updates the 7 scheduled tasks in `review` mode (idempotent) |
-| Validate | Runs the cost-overview task once and saves the first Live Report |
+| Reports | Builds all 6 Live Reports immediately (a few minutes); the tasks refresh them on schedule after that |
 | Summary | Lists results and the opt-ins: email alerts, GitHub correlation, read-only subagent |
 
 The approving user needs the agent **Administrator** role plus **Owner** or **User Access
@@ -60,6 +60,15 @@ Owner to run once in Azure Cloud Shell.
 | RBAC | Script grants roles; the caller must be Owner | Same roles and scopes, granted in chat on behalf of the user |
 | Subagent | Created automatically; tasks target it | Optional, on request (one paste); tasks run on the main agent in `review` mode |
 | Model tier / task owner | Set per task | Not exposed by the chat task tools; platform defaults apply |
+
+## What the reports cover
+
+The same scope as the source pack: the agent's **managed resources**, read live on every run.
+Subscriptions and management groups are reported in full. Resource groups are reported as exactly those
+resource groups: cost is fetched from the containing subscription, because that is where Azure exposes
+it, and then filtered to the managed resource groups. To report on a whole subscription, add the
+subscription under **Settings → Managed resources** and say "Set up FinOps for me" again. That grants
+Cost Management Reader on the new scope and rebuilds the reports.
 
 ## Permissions summary
 

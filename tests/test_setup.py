@@ -288,4 +288,8 @@ def test_setup_skill_contract():
     assert "Never use the terminal for `az`" in text
     assert "Check roles by listing assignments" in text
     assert "rbac-script" in text  # fallback documented
+    assert "Build all six Live Reports now" in text
+    plan_reports = [t["id"] for t in setup.task_plan(AGENT)["tasks"] if t["liveReport"]]
+    for task_id in plan_reports:  # every report task is built during setup
+        assert f"`{task_id}`" in text
     assert "RunAzCliWriteCommands" not in text  # refer to the tool generically, not by internal name

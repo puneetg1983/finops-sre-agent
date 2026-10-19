@@ -10,15 +10,15 @@ is replaced by the in-chat `finops-setup` skill.
 
 ## Install (end user)
 
-1. **Builder → Plugins → Add marketplace** → `https://github.com/puneetg1983/sre-agent-finops-plugin`,
+1. **Builder → Plugins → Add marketplace** → `https://github.com/puneetg1983/finops-sre-agent`,
    or install from the official marketplace once it is published there.
 2. Open **azure-finops** → **Install**.
 3. In chat: **"Set up FinOps for me"**. Approve the permission prompt if one appears.
 
 The agent grants its own read-only cost roles on your behalf, creates the seven scheduled tasks, and
-produces the first Live Report. Say the same sentence again at any time to repair or update the setup.
+builds all six Live Reports right away. Say the same sentence again at any time to repair or update the setup.
 
-Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md).
+Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md) · Design: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Repository layout
 
@@ -28,6 +28,7 @@ plugins/azure-finops/plugin.json    plugin manifest  { "skills": ["skills/"] }
 plugins/azure-finops/skills/        11 skills (finops-setup + 10 analysis skills)
 tests/                              offline pytest suite
 evals/                              offline eval harness from the source pack
+docs/DESIGN.md                      one-page design spec
 ```
 
 ## Test
