@@ -1,0 +1,6 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Call ListReports; call GetReport and reuse the exact-name report's `reportId`, or create it if absent.
+2. Run the full read-only `finops-for-ai` SKILL.md contract per effective scope and its deterministic `attribute.py`. Include `Microsoft.CognitiveServices` and `Microsoft.MachineLearningServices`; never filter only on `kind=OpenAI` or a meter category. Keep token/model and compute spend separate, preserve no-spend state, gaps, and daily settling lag.
+3. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. With `datetime.now(timezone.utc)`, call `build_ai_spend_model(attribute_result, ...)`; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-ai-spend.html")`.
+4. SaveReport the generated static file with `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version.

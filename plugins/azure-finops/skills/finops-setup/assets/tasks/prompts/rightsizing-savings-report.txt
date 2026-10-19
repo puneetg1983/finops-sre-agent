@@ -1,0 +1,9 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Run the full read-only `finops-rightsizing-advisor` SKILL.md contract for every effective scope and use its deterministic `rightsize.py` output. Preserve evidence, scope/cost gaps, and `verify first` status for unvalidated rows.
+2. Call ListReports; call GetReport and reuse the exact-name report's `reportId`, or create it if absent.
+3. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. With `datetime.now(timezone.utc)`, call `build_rightsizing_savings_model(rightsize_result, ...)`; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-rightsizing-savings.html")`.
+4. SaveReport the generated static file with `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version. If ListReports, GetReport, or SaveReport is unavailable or fails after the analysis succeeds, state that report delivery failed but continue step 5; a report-tool failure must never suppress the scheduled result or email.
+5. If no item clears the skill threshold, return exactly `No rightsizing opportunities above threshold this week.` and do not email. Otherwise return the ranked recommendations and total estimated monthly savings, then {{RIGHTSIZE_DELIVERY}}
+
+Recommend only; never modify resources.

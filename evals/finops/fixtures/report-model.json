@@ -1,0 +1,50 @@
+{
+  "title": "FinOps: Synthetic <Cost> & \"Overview\"",
+  "description": "Deterministic <evaluation> & customer-data-free.",
+  "refreshedAt": "2026-08-07T00:00:00Z",
+  "scopeSummary": [
+    "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/managed-<rg>"
+  ],
+  "partial": false,
+  "warnings": [
+    "Synthetic cost < 0 & \"quoted\"."
+  ],
+  "metrics": [
+    {
+      "label": "Spend <synthetic>",
+      "value": "$12.00 & stable",
+      "detail": "2 < 3 & 4 > 1",
+      "tone": "neutral"
+    }
+  ],
+  "chart": {
+    "type": "line",
+    "label": "Daily synthetic cost",
+    "labels": ["2026-08-01", "2026-08-02"],
+    "values": [10.25, 1.75]
+  },
+  "sections": [
+    {
+      "title": "Top <resources>",
+      "description": "Synthetic & deterministic.",
+      "columns": ["Resource <name>", "Cost & currency"],
+      "rows": [
+        ["vm-<a>&", "$10.25"],
+        ["storage-\"d\"", "$1.75"]
+      ],
+      "emptyMessage": "No <resources>."
+    }
+  ],
+  "_evaluation": {
+    "mustEscape": [
+      "FinOps: Synthetic <Cost> & \"Overview\"",
+      "Deterministic <evaluation> & customer-data-free.",
+      "Synthetic cost < 0 & \"quoted\".",
+      "Spend <synthetic>",
+      "2 < 3 & 4 > 1",
+      "Top <resources>",
+      "vm-<a>&",
+      "storage-\"d\""
+    ]
+  }
+}

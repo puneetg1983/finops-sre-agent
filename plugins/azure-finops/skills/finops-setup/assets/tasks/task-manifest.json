@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "retiredTasks": [
+    {
+      "id": "rightsizing-review",
+      "yaml": "rightsizing-weekly.yaml",
+      "nameEnv": "RIGHTSIZE_TASK_NAME",
+      "defaultName": "FinOps: Rightsizing Review (Weekly)",
+      "reason": "Merged into the Rightsizing Savings Live Report task to eliminate the concurrent duplicate weekly analysis pull."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "cost-anomaly",
+      "yaml": "cost-anomaly-daily.yaml",
+      "nameEnv": "TASK_NAME",
+      "defaultName": "FinOps: Cost Anomaly Detection (Daily)",
+      "description": "Part of the FinOps pack — installed with the finops-cost-anomaly-detection skill. Proactive daily cost-anomaly scan; reports only when a spike is detected.",
+      "cronEnv": "CRON",
+      "defaultCron": "0 14 * * *",
+      "modelEnv": "ANOMALY_MODEL_TIER",
+      "prompt": "prompts/cost-anomaly.txt",
+      "tags": ["finops", "finops-cost-anomaly-detection"]
+    },
+    {
+      "id": "cost-overview-report",
+      "yaml": "cost-overview-report-daily.yaml",
+      "nameEnv": "REPORT_TASK_NAME",
+      "defaultName": "FinOps: Cost Overview (Live Report, Daily)",
+      "description": "Part of the FinOps pack — a daily-refreshed Live Report (Operations Hub) snapshot of Azure cost: total, daily trend, top services, and top resource groups.",
+      "cronEnv": "REPORT_CRON",
+      "defaultCron": "30 14 * * *",
+      "modelEnv": "REPORT_MODEL_TIER",
+      "reportNameEnv": "REPORT_NAME",
+      "defaultReportName": "FinOps: Cost Overview",
+      "prompt": "prompts/cost-overview-report.txt",
+      "tags": ["finops", "finops-live-report"]
+    },
+    {
+      "id": "rightsizing-savings-report",
+      "yaml": "rightsizing-savings-report-weekly.yaml",
+      "nameEnv": "RIGHTSIZE_REPORT_TASK_NAME",
+      "defaultName": "FinOps: Rightsizing Savings (Live Report, Weekly)",
+      "description": "Part of the FinOps pack — a weekly-refreshed Live Report (Operations Hub) and review delivery for rightsizing / idle-resource savings: total potential savings, a top-opportunities chart, and ranked recommendations.",
+      "cronEnv": "RIGHTSIZE_REPORT_CRON",
+      "defaultCron": "0 15 * * 1",
+      "modelEnv": "RIGHTSIZE_REPORT_MODEL_TIER",
+      "reportNameEnv": "RIGHTSIZE_REPORT_NAME",
+      "defaultReportName": "FinOps: Rightsizing Savings",
+      "prompt": "prompts/rightsizing-savings-report.txt",
+      "tags": ["finops", "finops-live-report", "finops-rightsizing-advisor"]
+    },
+    {
+      "id": "budget-status-report",
+      "yaml": "budget-status-report-daily.yaml",
+      "nameEnv": "BUDGET_REPORT_TASK_NAME",
+      "defaultName": "FinOps: Budget Status (Live Report, Daily)",
+      "description": "Part of the FinOps pack — a daily-refreshed Live Report (Operations Hub) snapshot of Azure budget governance: each budget's spend vs amount, forecast, status, and any budgets that need a decision.",
+      "cronEnv": "BUDGET_REPORT_CRON",
+      "defaultCron": "0 16 * * *",
+      "modelEnv": "BUDGET_REPORT_MODEL_TIER",
+      "reportNameEnv": "BUDGET_REPORT_NAME",
+      "defaultReportName": "FinOps: Budget Status",
+      "prompt": "prompts/budget-status-report.txt",
+      "tags": ["finops", "finops-live-report"]
+    },
+    {
+      "id": "cost-optimization-report",
+      "yaml": "cost-optimization-report-weekly.yaml",
+      "nameEnv": "COST_OPT_TASK_NAME",
+      "defaultName": "FinOps: Cost Optimization (Live Report, Weekly)",
+      "description": "Part of the FinOps pack — a weekly-refreshed Live Report (Operations Hub) executive rollup for Azure: potential savings, cost anomalies, budget status, and governance findings, with one prioritized action list.",
+      "cronEnv": "COST_OPT_CRON",
+      "defaultCron": "0 17 * * 1",
+      "modelEnv": "COST_OPT_MODEL_TIER",
+      "reportNameEnv": "COST_OPT_NAME",
+      "defaultReportName": "FinOps: Cost Optimization",
+      "prompt": "prompts/cost-optimization-report.txt",
+      "tags": ["finops", "finops-live-report"]
+    },
+    {
+      "id": "ai-spend-report",
+      "yaml": "ai-spend-report-weekly.yaml",
+      "nameEnv": "AI_REPORT_TASK_NAME",
+      "defaultName": "FinOps: AI Spend (Live Report, Weekly)",
+      "description": "Part of the FinOps pack — a weekly-refreshed Live Report (Operations Hub) of Azure AI spend: total AI cost, per-model and per-resource breakdowns, token-vs-compute split, top drivers, and read-only optimization hints. Covers Azure OpenAI, AI Foundry, and ML.",
+      "cronEnv": "AI_REPORT_CRON",
+      "defaultCron": "0 18 * * 1",
+      "modelEnv": "AI_REPORT_MODEL_TIER",
+      "reportNameEnv": "AI_REPORT_NAME",
+      "defaultReportName": "FinOps: AI Spend",
+      "prompt": "prompts/ai-spend-report.txt",
+      "tags": ["finops", "finops-live-report"]
+    },
+    {
+      "id": "cost-vs-reliability-report",
+      "yaml": "cost-vs-reliability-report-weekly.yaml",
+      "nameEnv": "RELIABILITY_REPORT_TASK_NAME",
+      "defaultName": "FinOps: Cost vs Reliability (Live Report, Weekly)",
+      "description": "Part of the FinOps pack — a weekly-refreshed Live Report (Operations Hub) comparing Azure spend with reliability pain from alerts, Resource Health, and Advisor HighAvailability; ranks resources, services, investment candidates, and verify-before-cutting candidates.",
+      "cronEnv": "RELIABILITY_REPORT_CRON",
+      "defaultCron": "0 19 * * 1",
+      "modelEnv": "RELIABILITY_REPORT_MODEL_TIER",
+      "reportNameEnv": "RELIABILITY_REPORT_NAME",
+      "defaultReportName": "FinOps: Cost vs Reliability",
+      "prompt": "prompts/cost-vs-reliability-report.txt",
+      "tags": ["finops", "finops-live-report"]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+STRICT MANAGED-SCOPE PREAMBLE — complete this before any Azure analysis query, email, ListReports/GetReport call, or SaveReport call.
+
+Load `finops-managed-scope`; follow its current SKILL.md, bundled `scope.py`, and deterministic helpers with agent resource ID `{{AGENT_RESOURCE_ID}}`. Dynamically GET the current `managedResources` and resolve them in scheduled mode. This task accepts no override. Broad RBAC or visibility must never expand the boundary.
+
+FAIL CLOSED if discovery is unavailable, malformed, empty, or cannot fully expand a configured management group: stop without querying analysis data, sending email, or saving a report, and return only the scope error.
+
+Use only the resolved effective scopes. Follow the skill contract for independent scoped retrieval, complete pagination, overlap de-duplication, exact UsageDetails transport filtering, and disclosure of included, excluded, unattributed, unsupported, and partial/failed coverage. Never infer a parent or substitute scope.
+
+Azure operations are read-only: GET/read commands only; never use Azure POST, PUT, PATCH, DELETE, or a write tool.

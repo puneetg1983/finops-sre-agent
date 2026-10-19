@@ -1,0 +1,5 @@
+Run `finops-cost-anomaly-detection` for every effective scope. Read its SKILL.md and execute the complete transport, filtering, detection, correlation, and reporting contract; do not restate or reimplement that logic. Run the bundled `detect.py` with its daily defaults and `assume_last_partial=True`.
+
+{{ANOMALY_CORRELATION}}
+
+If no anomalies are found, return exactly `No cost anomalies detected for <date>.` and do not email. Otherwise return the skill's dollar-ranked anomaly table with candidate-cause evidence, then {{ANOMALY_DELIVERY}}

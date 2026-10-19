@@ -1,0 +1,6 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Call ListReports; call GetReport and reuse the exact-name report's `reportId`, or create it if absent.
+2. Run the full read-only `finops-cost-vs-reliability` SKILL.md contract per effective scope and its deterministic `reliability.py`. Preserve alerts, Resource Health, Advisor HighAvailability, unmatched signals, join coverage, limitations, and cost-data gaps.
+3. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. With `datetime.now(timezone.utc)`, call `build_cost_vs_reliability_model(reliability_result, ...)`. Warn about daily cost settling and weighted-alert limitations; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-cost-vs-reliability.html")`.
+4. SaveReport the generated static file with `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version.

@@ -1,0 +1,6 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Call ListReports; call GetReport and reuse the exact-name report's `reportId`, or create it if absent.
+2. Run the full read-only `finops-budget-governance` SKILL.md contract. Query every directly configured management-group budget scope and every expanded effective scope exactly as that contract requires; preserve source scope, de-duplicate overlaps, and never replace management-group budgets with descendant budgets. Run deterministic `budget.py`; if none exist, report that clearly. Do not pull UsageDetails.
+3. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. With `datetime.now(timezone.utc)`, call `build_budget_status_model(evaluate_budgets_result, ...)`; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-budget-status.html")`.
+4. SaveReport the generated static file with `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version.

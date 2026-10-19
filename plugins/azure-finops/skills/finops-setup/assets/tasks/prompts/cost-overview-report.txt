@@ -1,0 +1,6 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Call ListReports. If the exact name exists, call GetReport and reuse its `reportId`; otherwise create it.
+2. Following `finops-managed-scope`, GET 30 days of ActualCost UsageDetails and use deterministic in-sandbox Python to calculate total and daily spend, top services, top resource groups, and scope coverage. Preserve partial-pull warnings and the roughly daily settling lag.
+3. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. Using `datetime.now(timezone.utc)`, call `build_cost_overview_model(overview, ...)`; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-cost-overview.html")`.
+4. Call SaveReport with the generated static file, `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version.

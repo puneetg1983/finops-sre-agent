@@ -1,0 +1,17 @@
+{
+  "name": "sre-agent-finops",
+  "owner": {
+    "name": "puneetg1983"
+  },
+  "metadata": {
+    "description": "Standard Azure SRE Agent plugin marketplace for the read-only Azure FinOps pack",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "azure-finops",
+      "description": "Read-only Azure FinOps pack: cost anomalies, rightsizing, allocation, budgets, AI spend, cost vs reliability and executive Live Reports. Say \"Set up FinOps for me\" and the agent grants its read-only cost roles on your behalf, then creates the scheduled reports. Budget planning only produces a script for a human to review and run.",
+      "source": "./plugins/azure-finops"
+    }
+  ]
+}

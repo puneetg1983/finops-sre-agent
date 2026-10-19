@@ -1,0 +1,85 @@
+{
+  "managedScopes": [
+    "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/managed-rg"
+  ],
+  "pages": [
+    {
+      "request_url": "https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000001/providers/Microsoft.Consumption/usageDetails?api-version=2023-05-01",
+      "value": [
+        {
+          "id": "synthetic-managed-a",
+          "date": "2026-08-01",
+          "cost": "10.25",
+          "resourceGroup": "managed-rg",
+          "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/managed-rg/providers/Microsoft.Compute/virtualMachines/a"
+        },
+        {
+          "id": "synthetic-outside-b",
+          "date": "2026-08-01",
+          "cost": "90.00",
+          "resourceGroup": "other-rg",
+          "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/other-rg/providers/Microsoft.Compute/virtualMachines/b"
+        },
+        {
+          "id": "synthetic-prefix-collision",
+          "date": "2026-08-01",
+          "cost": "7.00",
+          "resourceGroup": "managed-rg-other",
+          "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/managed-rg-other/providers/Microsoft.Compute/virtualMachines/c"
+        }
+      ],
+      "nextLink": "https://management.azure.com/page2?x=1&amp;y=2"
+    },
+    {
+      "request_url": "https://management.azure.com/page2?x=1&y=2",
+      "value": [
+        {
+          "id": "synthetic-managed-d",
+          "date": "2026-08-02",
+          "cost": "1.75",
+          "resourceGroup": "MANAGED-RG",
+          "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/MANAGED-RG/providers/Microsoft.Storage/storageAccounts/d"
+        },
+        {
+          "id": "synthetic-managed-a",
+          "date": "2026-08-01",
+          "cost": "10.25",
+          "resourceGroup": "managed-rg",
+          "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/managed-rg/providers/Microsoft.Compute/virtualMachines/a"
+        },
+        {
+          "id": "synthetic-unattributed",
+          "date": "2026-08-02",
+          "cost": "3.50"
+        }
+      ],
+      "nextLink": null
+    }
+  ],
+  "expected": {
+    "page_count": 2,
+    "page_row_counts": [3, 3],
+    "retrieved_row_count": 6,
+    "request_urls": [
+      "https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000001/providers/Microsoft.Consumption/usageDetails?api-version=2023-05-01",
+      "https://management.azure.com/page2?x=1&y=2"
+    ],
+    "chain_complete": true,
+    "remaining_next_link": null,
+    "partial": false,
+    "input_count": 6,
+    "unique_count": 5,
+    "included_count": 2,
+    "excluded_count": 2,
+    "unattributed_count": 1,
+    "duplicate_count": 1
+  },
+  "expectedCosts": {
+    "included_cost": "12.00",
+    "excluded_cost": "97.00",
+    "unattributed_cost": "3.50",
+    "duplicate_cost": "10.25",
+    "attributed_cost": "109.00",
+    "total_cost": "112.50"
+  }
+}

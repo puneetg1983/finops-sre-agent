@@ -1,0 +1,7 @@
+Author and SAVE the static snapshot Live Report `{{REPORT_NAME}}` now; do not ask questions or defer to chat.
+
+1. Call ListReports; call GetReport and reuse the exact-name report's `reportId`, or create it if absent.
+2. Run the complete read-only `finops-cost-optimization-report` SKILL.md contract for every effective scope. Use its four underlying skills, share only already scope-filtered UsageDetails, preserve direct management-group budgets, and continue with explicit empty/partial sections when one source fails.
+3. Run bundled `summarize.py`. Keep each priority's `impact_type`; never sum savings, overruns, spikes, and governance exposure.
+4. Load `finops-report-renderer`, its SKILL.md, exact `models.py`, and exact `render.py`. With `datetime.now(timezone.utc)`, call `build_cost_optimization_model(summarize_result, ...)`. Carry source gaps, daily cost lag, run-rate estimates, and `verify first` rows; do not generically construct a model or write/edit HTML. Run `write_report(model, "finops-cost-optimization.html")`.
+5. SaveReport the generated static file with `allowedTools: []`, name `{{REPORT_NAME}}`, and the reused `reportId` when present. Make no view-time calls. Confirm the saved report id and version.

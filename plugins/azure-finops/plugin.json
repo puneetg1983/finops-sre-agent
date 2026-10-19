@@ -1,0 +1,7 @@
+{
+  "name": "azure-finops",
+  "version": "1.0.0",
+  "description": "Read-only Azure FinOps pack for Azure SRE Agent: eleven skills covering managed-scope enforcement, cost anomalies, rightsizing, allocation, budget governance, AI spend, cost vs reliability, executive rollups and deterministic Live Report rendering. Say \"Set up FinOps for me\" and finops-setup does everything: it grants the agent's read-only cost roles on behalf of the signed-in user (one approval), creates the seven scheduled reports, and produces the first Live Report. Budget planning only produces a script for a human to review and run.",
+  "license": "MIT",
+  "skills": ["skills/"]
+}
