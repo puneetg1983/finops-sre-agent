@@ -1,7 +1,15 @@
 # azure-finops plugin
 
-Read-only Azure FinOps pack for Azure SRE Agent, packaged as a **standard plugin**. It contains only
-skills, so it installs from the Plugin Marketplace with no external installer script.
+Read-only Azure FinOps pack for Azure SRE Agent, packaged as a **standard plugin**. It contains
+skills and an `.mcp.json` that declares the Azure Resource Manager (ARM) MCP server, so it installs
+from the Plugin Marketplace with no external installer script.
+
+## ARM MCP connector
+
+The plugin declares `https://mcp.management.azure.com` with the `x-mcp-toolset: CostManagement`
+header. Installing the plugin doesn't create the connector. On the plugin page, select **Configure**,
+change authentication to **OAuth**, and enter the scope
+`api://22bfbae3-f4e7-485f-be43-8cee15065084/.default` (the marketplace can't prefill OAuth settings).
 
 ## Setup: one sentence, at most one approval
 
