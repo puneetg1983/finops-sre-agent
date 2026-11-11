@@ -1,6 +1,6 @@
 ---
 name: finops-for-ai
-description: FinOps for Azure AI spend, read-only. Attributes Azure AI cost per resource, model, and service family from the modern Consumption UsageDetails pull — deliberately covering BOTH classic Azure OpenAI (kind=OpenAI) and Azure AI Foundry (kind=AIServices) accounts (both bill under Microsoft.CognitiveServices) PLUS Microsoft.MachineLearningServices (Foundry hub/project compute, managed online endpoints, fine-tuning), so Foundry-hosted model spend is never dropped. Splits token/model-meter spend from compute-meter spend, ranks the top cost drivers, and emits light read-only optimization hints, using the bundled attribute.py with the runtime's sandbox Python tool. Use for "what is our AI/OpenAI bill", per-model cost breakdown, and AI cost governance.
+description: FinOps for Azure AI spend, read-only. Attributes Azure AI cost per resource, model, and service family from ARM MCP query_costs (Consumption UsageDetails as a disclosed fallback) — deliberately covering BOTH classic Azure OpenAI (kind=OpenAI) and Azure AI Foundry (kind=AIServices) accounts (both bill under Microsoft.CognitiveServices) PLUS Microsoft.MachineLearningServices (Foundry hub/project compute, managed online endpoints, fine-tuning), so Foundry-hosted model spend is never dropped. Splits token/model-meter spend from compute-meter spend, ranks the top cost drivers, and emits light read-only optimization hints, using the bundled attribute.py with the runtime's sandbox Python tool. Use for "what is our AI/OpenAI bill", per-model cost breakdown, and AI cost governance.
 ---
 
 ## When to use this skill
@@ -23,20 +23,22 @@ token meter names but the account `kind` is `AIServices`. So filtering on `kind=
 category literally named "Azure OpenAI" **drops Foundry-hosted model spend**.
 
 This skill therefore keys off **`consumedService`** (both kinds roll up under
-`Microsoft.CognitiveServices`) and never gates on kind, and it also includes
+`Microsoft.CognitiveServices`; with `query_costs` it is the resource type's provider namespace) and
+never gates on kind, and it also includes
 **`Microsoft.MachineLearningServices`** so Foundry hub compute / managed endpoints / fine-tuning
 aren't dropped. See the pack README's "AI resource taxonomy" note.
 
 ## Required access
 
-- **Cost Management Reader** on the subscription (`costInUSD` is null without it). **Reader** for the
-  optional Resource Graph `kind` lookup.
+- The **ARM MCP connector** with its read-only `*_query_costs` tool; its signed-in user needs **Cost
+  Management Reader** on the managed scopes. The agent identity needs Cost Management Reader only for
+  the UsageDetails fallback, and **Reader** for the optional Resource Graph `kind` lookup.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. No POST/write APIs are used.
+  available, otherwise `RunInTerminal` with `python3`. No ARM MCP write tool or Azure write API is used.
 
 ## Scope
 
-v1 attributes AI spend from **cost line items only** — per **resource**, per **model** (parsed from
+v1 attributes AI spend from **cost meter lines only** (30-day totals per resource and meter) — per **resource**, per **model** (parsed from
 the token meter), per **service family**, and a **token vs compute** meter split. Per-**deployment**
 attribution and $/1K-token efficiency need Azure Monitor token *metrics* (a separate GET) and are
 **deferred to a v2**; v1 stops at per-resource + per-model. Optimization hints are cost-only and
@@ -53,37 +55,64 @@ descendants are the default boundary. Scheduled runs are strict/fail-closed with
 interactive named resource outside the boundary requires disclosure and explicit confirmation in a
 subsequent turn before any broader query. Broad RBAC never expands scope implicitly.
 
-Pull UsageDetails independently for each effective scope where supported, with separate pagination
-state and completeness tracking. De-duplicate overlapping line items, then filter resource ids and
-attributable scope fields against the expanded boundary before AI classification. Run Resource Graph
-once per unique effective subscription with `--subscriptions`; for RG-only managed scopes, use the
-exact case-insensitive resource-group predicate and client-side ARM-prefix filter below. De-duplicate
-overlapping results and retain only in-bound ids. Report included scopes, excluded rows,
-unattributed AI cost, unsupported scopes, and partial/failed scope coverage.
+Retrieve cost through the ARM MCP `query_costs` contract in `finops-managed-scope` (section 4):
+query each effective scope independently (one planned query per scope, never a wider scope), track
+truncation and completeness per scope, and let `prepare_cost_query` de-duplicate and filter resource
+ids and attributable scope fields against the expanded boundary before AI classification. Run
+Resource Graph once per unique effective subscription with `--subscriptions`; for RG-only managed
+scopes, use the exact case-insensitive resource-group predicate and client-side ARM-prefix filter
+below. De-duplicate overlapping results and retain only in-bound ids. Report included scopes,
+excluded rows, unattributed AI cost, unsupported scopes, and partial/failed scope coverage.
 
 ### Step 1 — Pull AI cost line items
 
-Follow the canonical Consumption UsageDetails transport contract in `finops-managed-scope`. Two
-details are specific to this skill:
+Use two small `query_costs` shapes over the trailing 30 days (inclusive UTC dates). Each shape is
+planned, called sequentially, split on truncation, and prepared separately:
 
-1. **Project the extra fields** the classifier needs — add `consumedService`, `meterSubCategory`,
-   and `meterName` on top of the usual cost fields:
+1. **Find the AI resource types.** Totals grouped by `ResourceType`:
 
+   ```python
+   from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query, sum_cost_by
+   from attribute import ai_resource_types
+
+   type_queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
+                                    start=START, end=END, as_of=TODAY, group_by="ResourceType")
+   types = prepare_cost_query(type_results, managed_resources,
+                              management_group_expansions=mg_descendants, window=(START, END))
+   ai_types = ai_resource_types(sum_cost_by(types["included_rows"], "resourceType")[0])
    ```
-   --query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, consumedService: properties.consumedService, meterCategory: properties.meterCategory, meterSubCategory: properties.meterSubCategory, meterName: properties.meterName, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId}, nextLink: nextLink}"
+
+   `ai_resource_types` keeps every `Microsoft.CognitiveServices/*` and
+   `Microsoft.MachineLearningServices/*` type exactly as Cost Management spells it. Do **not** filter
+   on `kind` or on a meter category — that is the whole point (Foundry `AIServices` accounts would be
+   dropped). If `ai_types` is empty, there is no AI spend: skip to Step 4.
+
+2. **Pull AI meter lines.** Totals for only those types, with the fields the classifier needs:
+
+   ```python
+   ai_queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
+                                  start=START, end=END, as_of=TODAY,
+                                  group_by="ResourceId,ResourceType,MeterCategory,MeterSubCategory,Meter",
+                                  filter_dimension="ResourceType", filter_values=ai_types)
+   prepared = prepare_cost_query(ai_results, managed_resources,
+                                 management_group_expansions=mg_descendants, window=(START, END))
+   ai_line_items = prepared["included_rows"]
    ```
 
-   In modern billing the full ARM resource id is in `properties.instanceName`; the projection falls
-   back to `properties.resourceId`.
+   Each row carries `cost`, `resourceId`, `meterCategory`, `meterSubCategory`, `meterName`, and
+   `consumedService` (the resource type's provider namespace), which is the shape `attribute.py`
+   expects. Classify only `included_rows`; use the returned coverage/partial fields directly; do not
+   merge, de-duplicate, or scope-filter rows in model reasoning.
 
-2. **Keep only the AI service families.** After flattening, retain rows whose `consumedService` is
-   `Microsoft.CognitiveServices` or `Microsoft.MachineLearningServices` (case-insensitive). Do **not**
-   filter on `kind` or on a meter category — that is the whole point (Foundry `AIServices` accounts
-   would be dropped). Aggregate over the trailing ~30 days.
+**Fallback (only when `finops-managed-scope` section 4 requires it):** follow the canonical
+Consumption UsageDetails transport contract in `finops-managed-scope` section 5 with this projection,
+keep rows whose `consumedService` is `Microsoft.CognitiveServices` or
+`Microsoft.MachineLearningServices` (case-insensitive), and pass the page envelopes through
+`prepare_usage_details(...)`:
 
-Before AI classification, pass the persisted page envelopes through `finops-managed-scope`'s
-`prepare_usage_details(...)` and classify only `included_rows`. Use the returned coverage/partial
-fields directly; do not merge, de-duplicate, or scope-filter pages in model reasoning.
+```
+--query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, consumedService: properties.consumedService, meterCategory: properties.meterCategory, meterSubCategory: properties.meterSubCategory, meterName: properties.meterName, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId}, nextLink: nextLink}"
+```
 
 ### Step 2 (optional) — Pull resource `kind` (Resource Graph)
 

@@ -70,8 +70,10 @@ as a general scope expansion. Report managed, explicitly confirmed, excluded, an
 
 For “what should my budget be?” or other advisory language:
 
-1. Read relevant budgets with `RunAzCliReadCommands`, including direct configured-management-group
-   budget collections and the de-duplicated expanded descendant effective scopes.
+1. Read relevant budgets with the ARM MCP `*_list_budgets` tool and `finops-budget-governance`'s
+   `budgets_from_tool_result`, including direct configured-management-group budget collections and
+   the de-duplicated expanded descendant effective scopes. If ARM MCP is unavailable or the parser
+   raises, use the `az rest` budgets GET with `RunAzCliReadCommands` and disclose that fallback.
 2. Load `recommend.py` with the available sandbox Python tool (`ExecutePythonCode`, or
    `RunInTerminal` with `python3`) and call `recommend_budgets`.
 3. Report amounts, evidence, assumptions, and missing contacts. Do not run any generated command.
@@ -95,7 +97,8 @@ Construct the exact resource URL:
 https://management.azure.com/{scope}/providers/Microsoft.Consumption/budgets/{encoded-name}?api-version=2023-05-01
 ```
 
-Use `RunAzCliReadCommands` with `az rest --method get`. A returned object means `update`; a confirmed
+Use `RunAzCliReadCommands` with `az rest --method get` (not ARM MCP `get_budget`: planning needs the
+raw ARM object with its top-level `eTag` and an unambiguous 404). A returned object means `update`; a confirmed
 404 means `create`. Any other read failure must be disclosed. Pass the exact returned object to
 `build_budget_proposal(exact_budget=...)`, or `None` only after a confirmed absence. Do not infer
 existence from a list response. An update exact GET must include its top-level `eTag`; otherwise the
@@ -105,7 +108,9 @@ helper refuses to emit an executable command/script. Update PUT bodies carry tha
 ### 2. Establish the amount
 
 Use a positive explicit amount when supplied. Otherwise fetch bounded Consumption UsageDetails
-`ActualCost` with **GET only**, minimal fields, complete `nextLink` pagination, and enough history:
+`ActualCost` with **GET only**, minimal fields, complete `nextLink` pagination, and enough history.
+This step intentionally does not use ARM MCP `query_costs`: that tool only reaches back 92 days,
+which cannot cover the required prior complete periods:
 
 - Monthly: current month plus 3 complete months.
 - Quarterly: current quarter plus 4 complete quarters.
@@ -155,8 +160,8 @@ Deterministic basis:
 - Quarterly: `max(current-quarter run rate, average prior 4 complete quarters)`.
 - Annually: `max(current-year run rate, prior complete year)`.
 
-Add headroom (default 15%) and reuse the helper's nice upward rounding. Never use the POST Cost
-Management Query API. If aggregates are partial/incomplete, do not derive an executable plan. A
+Add headroom (default 15%) and reuse the helper's nice upward rounding. Never call the Cost
+Management Query API directly, and never call ARM MCP `create_budget` or any other write tool. If aggregates are partial/incomplete, do not derive an executable plan. A
 human-supplied explicit amount may still be planned, with a prominent partial-evidence warning.
 
 ### 3. Build the proposal and script

@@ -341,7 +341,7 @@ def build_cost_overview_model(
     }
     return _model(
         "FinOps: Cost Overview",
-        "Daily-refreshed 30-day Azure ActualCost snapshot; recent UsageDetails can still be settling.",
+        "Daily-refreshed 30-day Azure actual-cost snapshot (pre-tax USD); recent cost data can still be settling.",
         context,
         [
             {"label": "30-day spend", "value": _money(total), "detail": "ActualCost"},
@@ -1638,7 +1638,7 @@ def build_cost_vs_reliability_model(
         context,
         [
             {"label": "Monthly spend", "value": _money(total), "detail": "ActualCost"},
-            {"label": "Costed resources", "value": str(resource_count), "detail": "UsageDetails resources"},
+            {"label": "Costed resources", "value": str(resource_count), "detail": "Resources with cost"},
             {"label": "Reliability signals", "value": str(signal_count), "detail": "Alerts, health, and Advisor HA"},
             {
                 "label": "Join coverage",
@@ -1737,7 +1737,7 @@ def build_cost_vs_reliability_model(
             },
             {
                 "title": "Unmatched reliability signals",
-                "description": "Signals that did not join to a UsageDetails resource ID.",
+                "description": "Signals that did not join to a costed resource ID.",
                 "columns": ["Resource", "Resource ID", "Signal", "Severity", "Score", "Date", "Detail"],
                 "rows": [
                     [row[0], row[1], row[2], row[3], _number(row[4]), row[5], row[6]]

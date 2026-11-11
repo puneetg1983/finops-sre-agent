@@ -1,12 +1,12 @@
 # Budget governance example
 
 Run from the repository root. `mtd_spend` demonstrates an optional independently supplied
-cross-check keyed by budget name; the scheduled skill relies on the budgets GET and does not
-perform a separate UsageDetails pull for this value.
+cross-check keyed by budget name; the scheduled skill relies on each budget's `currentSpend` and
+does not perform a separate cost pull for this value.
 
 The subscription ID below is fixture data. A live run first discovers the current managed
-subscription, resource-group, and management-group scopes from `AGENT_RESOURCE_ID` and performs the
-budgets GET separately for each effective scope. Scheduled discovery failure stops the run.
+subscription, resource-group, and management-group scopes from `AGENT_RESOURCE_ID` and reads budgets
+(ARM MCP `list_budgets`) separately for each effective scope. Scheduled discovery failure stops the run.
 
 ```python
 import importlib.util

@@ -56,6 +56,18 @@ REQUIRED_SKILLS = (
     "finops-report-renderer",
 )
 PYTHON_TOOLS = ("RunInTerminal", "ExecutePythonCode")
+# ARM MCP connector declared in the plugin's .mcp.json; only its read-only cost tools are
+# ever assigned. Write tools (create_budget, create_or_update_resource, create_deployment,
+# execute_resource_action, ...) are deliberately excluded.
+ARM_MCP_CONNECTION = "azure-resource-manager"
+ARM_MCP_READ_TOOLS = (
+    "query_costs",
+    "forecast_costs",
+    "list_budgets",
+    "get_budget",
+    "list_dimensions",
+    "list_alerts",
+)
 
 # Roles that already satisfy each requirement (assignments inherited from a parent scope count).
 AGENT_READ_ROLES = ("Reader", "Contributor", "Owner")
@@ -417,12 +429,23 @@ def rbac_script(agent_id, client):
 
 
 # --------------------------------------------------------------------------- subagent yaml
-def subagent_yaml(agent_id, python_tool="RunInTerminal", name="finops-investigator"):
+def arm_mcp_tools(connection=ARM_MCP_CONNECTION):
+    """Runtime names (`<connection>_<tool>`) of the read-only ARM MCP tools to assign."""
+    if not connection:
+        return []
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", connection):
+        raise SetupError("ARM MCP connection name may only contain letters, digits, dot, underscore, hyphen")
+    return [f"{connection}_{tool}" for tool in ARM_MCP_READ_TOOLS]
+
+
+def subagent_yaml(agent_id, python_tool="RunInTerminal", name="finops-investigator",
+                  arm_mcp_connection=ARM_MCP_CONNECTION):
     agent_id = agent_resource_id(agent_id)
     if python_tool not in PYTHON_TOOLS:
         raise SetupError("python tool must be RunInTerminal or ExecutePythonCode")
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name or ""):
         raise SetupError("subagent name may only contain letters, digits, dot, underscore, hyphen")
+    mcp_tools = arm_mcp_tools(arm_mcp_connection)
     props = json.loads(AGENT_TEMPLATE.read_text())["properties"]
     instructions = props["instructions"]
     for placeholder in ("{{AGENT_RESOURCE_ID}}", "__AGENT_RESOURCE_ID__", "${AGENT_RESOURCE_ID}"):
@@ -452,6 +475,7 @@ def subagent_yaml(agent_id, python_tool="RunInTerminal", name="finops-investigat
         f"  handoffDescription: {json.dumps(props['handoffDescription'], ensure_ascii=False)}",
         "  tools:",
         *[f"    - {tool}" for tool in tools],
+        *(["  mcpTools:", *[f"    - {tool}" for tool in mcp_tools]] if mcp_tools else []),
         f"  allowParallelToolCalls: {str(bool(props.get('allowParallelToolCalls', True))).lower()}",
         f"  maxReflectionCount: {int(props.get('maxReflectionCount', 2))}",
         "  enableSkills: true",
@@ -619,6 +643,8 @@ def main(argv=None):
     p.add_argument("--agent-resource-id", required=True)
     p.add_argument("--python-tool", default="RunInTerminal", choices=PYTHON_TOOLS)
     p.add_argument("--name", default="finops-investigator")
+    p.add_argument("--arm-mcp-connection", default=ARM_MCP_CONNECTION,
+                   help="ARM MCP connector name; pass an empty string to omit ARM MCP tools")
 
     p = sub.add_parser("task-plan")
     p.add_argument("--agent-resource-id", required=True)
@@ -641,7 +667,8 @@ def main(argv=None):
             sys.stdout.write(rbac_script(args.agent_resource_id, args.client_id))
             return 0
         elif args.command == "subagent-yaml":
-            sys.stdout.write(subagent_yaml(args.agent_resource_id, args.python_tool, args.name))
+            sys.stdout.write(subagent_yaml(args.agent_resource_id, args.python_tool, args.name,
+                                           args.arm_mcp_connection))
             return 0
         else:
             existing = _load_json(args.existing) if args.existing else []

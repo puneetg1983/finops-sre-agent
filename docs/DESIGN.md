@@ -3,7 +3,7 @@
 **Author:** Puneet Gupta · **Status:** Draft for review · **Repo:** github.com/puneetg1983/finops-sre-agent
 
 ## What
-A standard Plugin Marketplace plugin (skills only) that turns SRE Agent into a FinOps assistant. It covers
+A standard Plugin Marketplace plugin (skills plus an ARM MCP server requirement in `.mcp.json`) that turns SRE Agent into a FinOps assistant. It covers
 cost anomalies, rightsizing, budgets, allocation, AI spend and cost vs. reliability, with 6 auto-refreshing
 Live Reports.
 
@@ -33,6 +33,7 @@ All analysis is read-only. Every skill also works in chat, for example *"Why did
 | FinOps needs | Delivered by plugin install? |
 |---|---|
 | Skills | ✅ Yes |
+| ARM MCP connector for cost data | ⚠️ Declared only; the user configures it (OAuth scope can't be prefilled) |
 | Scheduled tasks | ❌ No |
 | Live Reports | ❌ No |
 | Subagents | ❌ No (and no chat tool can create one) |
@@ -55,10 +56,20 @@ offline helper (`setup.py`); the LLM only runs the commands that helper prints.
 
 No questions by default. Re-running the same sentence repairs or updates setup.
 
+### Cost data: ARM MCP
+Direct Consumption UsageDetails pulls throttle easily, so every cost read goes through the ARM MCP
+server's read-only tools (`query_costs`, `list_budgets`). A shared offline adapter
+(`finops-managed-scope/cost_query.py`) plans one query per managed scope, pins USD and explicit dates,
+splits results truncated at 5,000 rows, rejects gaps/overlaps/out-of-scope queries, and flattens rows
+into the shape the existing analysis helpers use. Setup checks the connector; if it is missing or its
+sign-in expired, skills fall back to UsageDetails with a warning on every report. Budget-amount
+derivation stays on UsageDetails because `query_costs` only reaches back 92 days.
+
 ## Security
 - **Least privilege:** only *Reader* (agent resource) and *Cost Management Reader* (cost scopes). The agent identity can never grant roles; the **user** grants them via OBO.
 - **Approver** needs agent Administrator plus Owner or User Access Administrator. Otherwise the agent hands over a Cloud Shell script for an Owner.
-- **Unattended runs are read-only:** tasks run in review mode, so no write can happen without a human.
+- **Unattended runs are read-only:** tasks run in review mode, so no write can happen without a human. Only ARM MCP read tools are selected or assigned; its write tools are never called.
+- **ARM MCP identity:** connector calls run as the user who signed in to the connector, bounded by that user's RBAC; managed-scope filtering still applies.
 - **Scope:** reports cover only the agent's **managed resources**, read live on every run, and fail closed. A resource-group scope reports only that resource group.
 
 ## Alternatives rejected
@@ -72,6 +83,7 @@ No questions by default. Re-running the same sentence repairs or updates setup.
 1. Subagents can't be created from chat → optional one-paste step. *Ask:* subagents and tasks in `plugin.json`.
 2. One approval is always needed for roles. *Ask:* plugin-declared roles, granted at Install.
 3. The chat task tool can't target a subagent or set model tier. *Ask:* add both.
+4. The marketplace can't prefill an OAuth scope for a plugin MCP server, and URL installs don't show its **Configure** button. *Ask:* accept OAuth settings in `.mcp.json` and show connector setup for every install.
 
 ## Status
 Built and unit-tested (setup tests 26/26 pass; eval harness passes; OBO role grants are live fleet-wide).

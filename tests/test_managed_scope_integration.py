@@ -314,3 +314,33 @@ def test_rg_only_arg_and_advisor_policy_is_concrete():
         assert "skill.md" in lowered, path
         assert "az graph query" not in lowered, path
         assert "az advisor recommendation list" not in lowered, path
+
+
+def test_cost_skills_retrieve_through_arm_mcp_with_disclosed_fallback():
+    skills = FINOPS / "skills"
+    managed = re.sub(r"\s+", " ", (skills / "finops-managed-scope" / "SKILL.md").read_text())
+    assert "from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query" in managed
+    assert "api://22bfbae3-f4e7-485f-be43-8cee15065084/.default" in managed
+    assert "Never call `create_budget`" in managed
+    assert "ARM MCP query_costs unavailable; used Consumption UsageDetails fallback" in managed
+
+    for name in {
+        "finops-cost-anomaly-detection",
+        "finops-cost-allocation",
+        "finops-for-ai",
+        "finops-rightsizing-advisor",
+        "finops-cost-vs-reliability",
+    }:
+        text = (skills / name / "SKILL.md").read_text()
+        assert "plan_cost_queries(" in text, name
+        assert "prepare_cost_query(" in text, name
+        assert "split_cost_query" in text, name
+        assert "Fallback (only when `finops-managed-scope` section 4 requires it)" in text, name
+
+    governance = (skills / "finops-budget-governance" / "SKILL.md").read_text()
+    assert "budgets_from_tool_result" in governance and "*_list_budgets" in governance
+    editor = (skills / "finops-budget-editor" / "SKILL.md").read_text()
+    assert "only reaches back 92 days" in editor
+
+    preamble = (TASKS / "prompts" / "_managed-scope.txt").read_text()
+    assert "*_query_costs" in preamble and "Never call an ARM MCP write tool" in preamble

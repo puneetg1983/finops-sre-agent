@@ -6,10 +6,30 @@ from the Plugin Marketplace with no external installer script.
 
 ## ARM MCP connector
 
-The plugin declares `https://mcp.management.azure.com` with the `x-mcp-toolset: CostManagement`
-header. Installing the plugin doesn't create the connector. On the plugin page, select **Configure**,
-change authentication to **OAuth**, and enter the scope
-`api://22bfbae3-f4e7-485f-be43-8cee15065084/.default` (the marketplace can't prefill OAuth settings).
+Cost and budget data comes from the **Azure Resource Manager (ARM) MCP server** instead of direct
+Consumption UsageDetails calls, which throttle easily. The plugin's `.mcp.json` declares
+`https://mcp.management.azure.com` with the `x-mcp-toolset: CostManagement` header (needed for
+`list_budgets`, `get_budget`, and `forecast_costs`).
+
+Installing the plugin doesn't create the connector:
+
+1. Open **Plugins → azure-finops**, scroll to **Connectors**, and select **Configure** on
+   `azure-resource-manager`. The URL and header are prefilled.
+2. Change authentication to **OAuth** and enter the scope
+   `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default` (the marketplace can't prefill OAuth settings).
+3. Sign in with an account that has **Cost Management Reader** on the managed scopes.
+4. Select only the read tools: `query_costs`, `forecast_costs`, `list_budgets`, `get_budget`,
+   `list_dimensions`, and `list_alerts`. Leave every write tool (`create_budget`,
+   `create_or_update_resource`, `create_deployment`, ...) unselected.
+
+ARM MCP calls run as the user who signed in to the connector, including scheduled runs. If the
+connector is missing or its sign-in expires, skills fall back to Consumption UsageDetails and say so in
+every report. `finops-setup` checks the connector and reports its state.
+
+Known ARM MCP limits the skills handle: `query_costs` returns at most 5,000 rows and cannot page (a
+truncated result is split by date and re-queried), reaches back only 92 days (budget-amount
+derivation in `finops-budget-editor` therefore still uses UsageDetails), and cannot group by tag
+(allocation joins resource IDs to Resource Graph tags).
 
 ## Setup: one sentence, at most one approval
 
@@ -73,8 +93,8 @@ Owner to run once in Azure Cloud Shell.
 
 The same scope as the source pack: the agent's **managed resources**, read live on every run.
 Subscriptions and management groups are reported in full. Resource groups are reported as exactly those
-resource groups: cost is fetched from the containing subscription, because that is where Azure exposes
-it, and then filtered to the managed resource groups. To report on a whole subscription, add the
+resource groups: ARM MCP queries each managed resource group directly (the UsageDetails fallback fetches
+the containing subscription and filters it to the managed resource groups). To report on a whole subscription, add the
 subscription under **Settings → Managed resources** and say "Set up FinOps for me" again. That grants
 Cost Management Reader on the new scope and rebuilds the reports.
 
@@ -82,5 +102,6 @@ Cost Management Reader on the new scope and rebuilds the reports.
 
 Only read roles are granted: **Reader** on the agent resource, and **Cost Management Reader** on each
 managed subscription or management group. For resource-group boundaries the grant goes on the containing
-subscription, because that is where Azure exposes cost data. No write roles, and no budget-write
-permissions.
+subscription, because that is where the UsageDetails fallback reads cost data. No write roles, and no
+budget-write permissions. The ARM MCP connector uses its signed-in user's own access, so that user also
+needs Cost Management Reader on the managed scopes.

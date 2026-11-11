@@ -1,6 +1,6 @@
 ---
 name: finops-cost-vs-reliability
-description: FinOps cost-vs-reliability analysis for Azure, read-only. Joins monthly UsageDetails cost to Azure Monitor alerts (primary pain signal), Resource Health unavailable/degraded events, and Advisor HighAvailability recommendations (secondary signals), then ranks resources and services by transparent weighted-count reliability pain using the bundled reliability.py with the runtime's sandbox Python tool. Use for "where are we spending money but still hurting", "which low-cost resources need HA investment", and "which high-cost resources have no reliability pain and should be verified before rightsizing".
+description: FinOps cost-vs-reliability analysis for Azure, read-only. Joins monthly per-resource cost (ARM MCP query_costs; UsageDetails as a disclosed fallback) to Azure Monitor alerts (primary pain signal), Resource Health unavailable/degraded events, and Advisor HighAvailability recommendations (secondary signals), then ranks resources and services by transparent weighted-count reliability pain using the bundled reliability.py with the runtime's sandbox Python tool. Use for "where are we spending money but still hurting", "which low-cost resources need HA investment", and "which high-cost resources have no reliability pain and should be verified before rightsizing".
 ---
 
 ## When to use this skill
@@ -15,14 +15,16 @@ For cost spikes use `finops-cost-anomaly-detection`; for concrete savings recomm
 
 ## Required access
 
-- **Cost Management Reader** on the subscription (`costInUSD` is null without it). **Reader** for
-  Azure Monitor Alerts, Resource Health, Advisor, and optional Activity Log pulls.
+- The **ARM MCP connector** with its read-only `*_query_costs` tool; its signed-in user needs **Cost
+  Management Reader** on the managed scopes (the agent identity needs it only for the UsageDetails
+  fallback). **Reader** for Azure Monitor Alerts, Resource Health, Advisor, and optional Activity Log
+  pulls.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. No POST/write APIs are used.
+  available, otherwise `RunInTerminal` with `python3`. No ARM MCP write tool or Azure write API is used.
 
 ## Scope
 
-v1 is **per-resource first**, with a **per-service rollup**. It joins monthly UsageDetails cost to:
+v1 is **per-resource first**, with a **per-service rollup**. It joins monthly per-resource cost to:
 
 1. Azure Monitor / Alerts Management alerts — the primary reliability pain signal.
 2. Resource Health `Unavailable` / `Degraded` availability statuses.
@@ -43,8 +45,9 @@ are the default boundary. Scheduled runs are strict/fail-closed with no override
 outside-scope target requires disclosure and explicit confirmation in a subsequent turn before any
 broader query. Broad RBAC never silently expands scope.
 
-Pull UsageDetails independently for every effective scope where supported, paginate each independently,
-de-duplicate overlaps, and boundary-filter resource ids while preserving unattributed cost separately.
+Pull cost independently for every effective scope through the ARM MCP `query_costs` contract (one
+planned query per scope, never a wider scope); `prepare_cost_query` tracks completeness per scope,
+de-duplicates overlaps, and boundary-filters resource ids while preserving unattributed cost separately.
 Pull Alerts Management, Resource Health, Advisor, and optional Activity Log once per effective
 scope/subscription; retain only in-bound resource signals, while separately counting legitimate
 scope-level signals. Report included scopes, excluded/unmatched/unattributed data, unsupported scopes,
@@ -55,10 +58,30 @@ is represented only by RG-level managed scopes, run once per unique effective RG
 `--resource-group`, then client-side filter normalized resource ids to that exact RG ARM prefix.
 De-duplicate recommendations from overlapping scopes.
 
-### Step 1 — Pull monthly cost line items (UsageDetails GET only)
+### Step 1 — Pull monthly cost per resource (ARM MCP `query_costs`)
 
-Follow the canonical Consumption UsageDetails transport contract in `finops-managed-scope` for the
-complete trailing ~30-day result, using this skill's needed fields:
+Retrieve trailing 30-day **totals per resource and resource type** (inclusive UTC dates):
+
+```python
+from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query
+
+queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
+                            start=START, end=END, as_of=TODAY, group_by="ResourceId,ResourceType")
+# call *_query_costs with each planned argument object, sequentially; split any result whose
+# properties.nextLink is not null with split_cost_query(arguments) and query both halves
+prepared = prepare_cost_query(results, managed_resources,
+                              management_group_expansions=mg_descendants, window=(START, END))
+line_items = prepared["included_rows"]   # {cost, resourceId, resourceType, consumedService, ...}
+```
+
+Each row's `consumedService` is the resource type's provider namespace, which drives the per-service
+rollup. Give `analyze_cost_vs_reliability` only `included_rows`, and preserve the returned
+coverage/partial metadata instead of merging or filtering rows in model reasoning. If it is partial,
+label the report totals **partial — cost pull incomplete**.
+
+**Fallback (only when `finops-managed-scope` section 4 requires it):** follow the canonical
+Consumption UsageDetails transport contract in `finops-managed-scope` section 5 with this skill's
+fields, then pass the page envelopes through `prepare_usage_details(...)`:
 
 ```bash
 az rest --method get \
@@ -66,14 +89,7 @@ az rest --method get \
   --query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, pretaxCost: properties.pretaxCost, consumedService: properties.consumedService, meterCategory: properties.meterCategory, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId}, nextLink: nextLink}"
 ```
 
-In modern billing the full ARM resource id is usually in `properties.instanceName`; the projection
-falls back to `properties.resourceId`. If `costInUSD` is null, the bundled core uses the same fallback
-order as the other skills: `cost` / `costInUSD` / `pretaxCost`. If the pull cannot complete after all
-fallbacks, keep the partial rows but label the report totals **partial — cost pull truncated**.
-
-Pass persisted page envelopes through `finops-managed-scope`'s
-`prepare_usage_details(...)` and give `analyze_cost_vs_reliability` only `included_rows`. Preserve
-the returned coverage/partial metadata instead of merging or filtering pages in model reasoning.
+The bundled core reads cost in the order `cost` / `costInUSD` / `pretaxCost`.
 
 ### Step 2 — Pull Azure Monitor alerts (primary pain signal)
 

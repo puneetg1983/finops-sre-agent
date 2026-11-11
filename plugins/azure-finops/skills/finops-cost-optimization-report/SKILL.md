@@ -18,10 +18,12 @@ spend → `finops-cost-allocation`; budget status → `finops-budget-governance`
 
 ## Required access
 
-- **Cost Management Reader** (or **Reader**) on the subscription — the same read-only access the four
-  underlying skills use. No write role is needed or used.
+- The same read-only access the four underlying skills use: the **ARM MCP connector**'s read-only
+  cost tools (`*_query_costs`, `*_list_budgets`) and **Cost Management Reader** (or **Reader**) for
+  the fallbacks. No write role is needed or used.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. **No POST/PUT or write APIs are called.**
+  available, otherwise `RunInTerminal` with `python3`. **No ARM MCP write tool and no PUT or write
+  API is called.**
 - This report is purely a **rollup**: "policy findings" are the existing tag-hygiene / untagged-spend
   and budget-gate signals — it introduces no new data source and no new permission.
 
@@ -45,8 +47,9 @@ An interactive named outside-scope target requires disclosure and explicit confi
 subsequent turn before any broader query. Broad RBAC never silently expands scope.
 
 For each effective scope or expanded descendant, every underlying analysis must query and enforce its own
-defense-in-depth filtering. Shared UsageDetails may be reused only when it was independently paginated
-per effective scope, de-duplicated, boundary-filtered, and annotated with per-scope completeness.
+defense-in-depth filtering. Shared cost rows may be reused only when they were retrieved independently
+per effective scope, de-duplicated, boundary-filtered, and annotated with per-scope completeness (the
+`prepare_cost_query` or `prepare_usage_details` result).
 The report must disclose included scopes, excluded/unattributed data, unsupported scopes, and partial
 coverage alongside the existing analysis caveats.
 
@@ -60,10 +63,12 @@ pull and call — do **not** re-implement their logic here:
 3. **finops-cost-allocation** → `allocate_costs(costs, tags, dimension=...)` → an allocation dict.
 4. **finops-budget-governance** → `evaluate_budgets(budgets)` → a budget-status dict.
 
-The heavy/`413`-prone step is the shared **cost line-item pull** used by anomaly + allocation — pull it
-**once** and feed both cores. If any one analysis fails or is out of scope, keep going with the rest;
-`summarize.py` treats a missing input as an empty section. Do **not** use `az rest --method post` or
-the Cost Management Query API — POST is blocked as a write.
+The heavy, throttling-prone step is the shared **cost pull**. Pull the anomaly skill's daily
+`ResourceId,MeterCategory` `query_costs` shape **once** (35 days) and feed every core from its
+`prepare_cost_query` result: anomaly uses the rows directly; allocation and rightsizing use
+`sum_cost_by(rows_in_trailing_30_days, "resourceId")`. Do not re-query the same data per skill. If
+any one analysis fails or is out of scope, keep going with the rest; `summarize.py` treats a missing
+input as an empty section. Never call `az rest --method post` or an ARM MCP write tool.
 
 ### Step 2 — Roll up (bundled summarize.py, in-sandbox)
 

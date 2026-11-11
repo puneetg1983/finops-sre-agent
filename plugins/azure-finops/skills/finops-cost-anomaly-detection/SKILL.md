@@ -1,6 +1,6 @@
 ---
 name: finops-cost-anomaly-detection
-description: Detect Azure cost spikes and explain why they happened. Pulls the daily cost time-series from Cost Management (Consumption UsageDetails), detects per-service/per-meter anomalies with the bundled detect.py using the runtime's sandbox Python tool, then correlates each spike to recent deployments, activity-log changes, and GitHub merges to surface a probable cause. Use for scheduled cost monitoring, "did anything spike this week and why", and adding a cost lens to incident investigations.
+description: Detect Azure cost spikes and explain why they happened. Pulls the daily cost time-series through the ARM MCP query_costs tool (Consumption UsageDetails only as a disclosed fallback), detects per-service/per-meter anomalies with the bundled detect.py using the runtime's sandbox Python tool, then correlates each spike to recent deployments, activity-log changes, and GitHub merges to surface a probable cause. Use for scheduled cost monitoring, "did anything spike this week and why", and adding a cost lens to incident investigations.
 ---
 
 ## When to use this skill
@@ -12,12 +12,14 @@ periodic cost summary, use `cost-optimization-report` instead.
 
 ## Required access
 
-- **Cost Management Reader** on the subscription (or billing scope) for the agent's managed
-  identity. Without it, `costInUSD` comes back null. This is a one-time RBAC grant (see the
-  plugin README).
-- Read-only `az` (`RunAzCliReadCommands`), the GitHub connector (for change correlation), and
+- The **ARM MCP connector** from this plugin's `.mcp.json`, with its read-only `*_query_costs`
+  tool selected. Its calls run as the user who signed in to the connector, who needs **Cost
+  Management Reader** on the managed scopes.
+- **Cost Management Reader** for the agent's managed identity, used only by the UsageDetails
+  fallback (one-time RBAC grant; see the plugin README).
+- Read-only `az` (`RunAzCliReadCommands`) for change correlation, the GitHub connector, and
   sandbox Python: use `ExecutePythonCode` when available, otherwise `RunInTerminal` with
-  `python3`. No POST/write APIs are used.
+  `python3`. No ARM MCP write tool or Azure write API is used.
 
 ## Procedure
 
@@ -29,62 +31,58 @@ are the default boundary. Scheduled runs are strict/fail-closed and accept no ov
 named resource outside scope requires disclosure and explicit confirmation in a subsequent turn before
 any broader query. Broad RBAC never silently expands scope.
 
-Pull UsageDetails independently for every effective scope where supported, paginate each scope
-independently, and track completeness per scope. De-duplicate overlap, then filter resource ids and
-scope fields against the expanded boundary as defense in depth. Scope deployment and Activity Log
-correlation to the same effective scope/resource. Report included scopes, excluded rows, unattributed
-cost, unsupported scopes, and partial/failed coverage.
+Retrieve cost through the ARM MCP `query_costs` contract in `finops-managed-scope` (section 4):
+query every effective scope independently (one planned query per scope, never a wider scope),
+track truncation and completeness per scope, and let `prepare_cost_query` de-duplicate and
+filter rows against the expanded boundary as defense in depth. Scope deployment and Activity Log correlation to the same effective scope/resource.
+Report included scopes, excluded rows, unattributed cost, unsupported scopes, and
+partial/failed coverage.
 
 ### Step 1 — Pull the daily cost time-series
 
-Use the **modern Consumption UsageDetails GET** (the Cost Management Query/POST aggregation API is
-blocked by the read-only gate and is **not needed** — detection happens client-side). Request a
-trailing window large enough for a baseline plus the current period (default: 35 days).
+Request a trailing window large enough for a baseline plus the current period (default: 35
+days, ending today UTC). Detection happens client-side, so only one query shape is needed:
+daily cost by resource and meter category. `resourceGroup` is derived from each resource ID.
 
-**Start with a bounded page size, minimal field projection, and full pagination.** Request the
-trailing window directly with `\$top=1000`, project only the fields the detector needs with
-`--query`, and follow every `nextLink`. Do not lead with `usageStart` slicing: live runs showed that
-the service does not reliably apply that filter, so slicing is a fallback rather than the primary
-retrieval strategy.
+```python
+from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query
 
-The controls solve different problems:
+queries = plan_cost_queries(
+    managed_resources,
+    management_group_expansions=mg_descendants,
+    start=START, end=END, as_of=TODAY,
+    granularity="Daily",
+    group_by="ResourceId,MeterCategory",
+)
+```
 
-1. **Bounded `\$top` limits each server page.** A `413 Request Too Large` is a server-side response
-   size failure. Start at `\$top=1000`; if the initial request or a `nextLink` returns 413, retry the
-   same request with a smaller page size (`100`, then `20`).
-2. **`--query` keeps retained data small.** It is applied client-side after download, so it cannot by
-   itself prevent a server 413. It does keep the JSON stored, concatenated, and passed to the sandbox
-   limited to the fields the analysis uses.
-3. **Date slicing is the final fallback.** If bounded pages still fail, split the trailing window into
-   short half-open `usageStart` slices, paginate each slice, and de-duplicate the combined rows.
+Call `*_query_costs` with each argument object exactly as planned, sequentially. When a result
+has a non-null `properties.nextLink`, discard it and query both `split_cost_query(arguments)`
+halves instead. Then:
+
+```python
+coverage = prepare_cost_query(results, managed_resources,
+                              management_group_expansions=mg_descendants,
+                              window=(START, END))
+line_items = coverage["included_rows"]   # {date, cost, meterCategory, resourceGroup, resourceId, ...}
+```
+
+Do not concatenate, de-duplicate, or scope-filter rows in model reasoning. `query_costs` has no
+tags, so the default dimensions (`meterCategory`, `resourceGroup`, `resourceId`) are used; for a
+`tag:<key>` dimension, join resource IDs to Resource Graph tags first. If `prepare_cost_query`
+reports `partial`, label every downstream total **"partial — cost pull incomplete, spend
+understated"**.
+
+**Fallback (only when `finops-managed-scope` section 4 requires it):** use the Consumption
+UsageDetails contract in `finops-managed-scope` section 5 over the same window with this
+projection, then call `prepare_usage_details(...)` and use its `included_rows`:
 
 ```bash
 az rest --method get --url "https://management.azure.com/subscriptions/<SUB_ID>/providers/Microsoft.Consumption/usageDetails?api-version=2023-05-01&metric=ActualCost&\$top=1000" \
   --query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, meterCategory: properties.meterCategory, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId, tags: tags}, nextLink: nextLink}"
 ```
 
-- **Primary anti-413 sequence:** bounded `\$top=1000`; on 413 retry with `100`, then `20`.
-- **`--query` projection (retained-payload hygiene):** keeps only `{date, cost, meterCategory,
-  resourceGroup, resourceId, tags}` plus `nextLink`, so the concatenated dataset stays small.
-- **Paginate the complete result:** follow `nextLink` until absent. `nextLink` already carries the
-  skip token — GET it as-is (don't re-add parameters). Note the
-  `nextLink` in the raw body is HTML-escaped (`&amp;`) — decode `&amp;`→`&` before following it.
-- **Date-slice fallback:** only if smaller pages still 413, retry with short
-  `\$filter=properties/usageStart ge '<SLICE_START>' and properties/usageStart lt '<SLICE_END>'`
-  windows. Because the filter is not reliably applied, verify returned dates and de-duplicate by
-  `(resourceId, date, meterId)` when concatenating.
-- **Never proceed on silently-partial cost.** If the pull cannot complete after all fallbacks,
-  keep the rows you have **but explicitly label every downstream total as "partial — cost pull
-  truncated, spend understated"** so the numbers aren't trusted as complete.
-- The projected rows already match the shape `detect.py` expects:
-  `{date, cost, meterCategory, resourceGroup, resourceId, tags}` — `date` from
-  `properties.date`, `cost` from `properties.costInUSD`. For `resourceId` use
-  **`properties.instanceName`** (in modern billing the full ARM resource id lives there and
-  `properties.resourceId` is null); fall back to `properties.resourceId` when `instanceName`
-  is absent.
-- Pass the persisted page envelopes to `finops-managed-scope`'s
-  `prepare_usage_details(...)`; call `detect_anomalies` only with its `included_rows`. Do not
-  concatenate, de-duplicate, or scope-filter pages in model reasoning.
+Follow every `nextLink` (decode `&amp;` first); on 413 retry with `\$top=100`, then `20`.
 
 ### Step 2 — Detect (bundled detect.py, in-sandbox)
 
@@ -149,10 +147,12 @@ anomalies" line.
 | Limit | Behavior |
 |-------|----------|
 | Billing lag (1-2 days) | `assume_last_partial=True` excludes the partial newest day |
-| Microsoft Fabric cost | Not in the Consumption surface — out of scope; state it explicitly |
+| Microsoft Fabric cost | Not in the Cost Management surface — out of scope; state it explicitly |
+| `query_costs` row cap (5,000, no paging) | Split truncated date ranges with `split_cost_query`; never accept a result with `nextLink` |
+| ARM MCP sign-in expired | Interactive: ask the user to reconnect; scheduled: disclosed UsageDetails fallback |
 | Weak tag coverage | Where tags are missing, correlate on resource/RG identity instead of team/owner |
 | Correlation != causation | Present candidate causes with evidence; do not claim certainty |
-| Cost Management Reader missing | `costInUSD` is null — stop and report the missing grant, don't guess |
+| Cost Management Reader missing | `query_costs` returns an authorization error (or `costInUSD` is null in the fallback) — stop and report the missing grant, don't guess |
 
 ## Testing
 

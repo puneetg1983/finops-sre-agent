@@ -17,10 +17,12 @@ For cost *spikes* and their root cause, use `finops-cost-anomaly-detection` inst
 ## Required access
 
 - **Reader** on the subscription/resource groups for Advisor, Resource Graph, and Azure Monitor
-  metrics. **Cost Management Reader** to attach per-resource monthly cost (without it, savings are
-  still estimated from Advisor where available but resources with no Advisor number show unknown cost).
+  metrics. Per-resource monthly cost comes from the **ARM MCP connector**'s read-only `*_query_costs` tool;
+  its signed-in user needs **Cost Management Reader** (the agent identity needs it only for the
+  UsageDetails fallback). Without cost, savings are still estimated from Advisor where available but
+  resources with no Advisor number show unknown cost.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. No POST/write APIs are used.
+  available, otherwise `RunInTerminal` with `python3`. No ARM MCP write tool or Azure write API is used.
 
 ## Scope
 
@@ -50,9 +52,10 @@ retain only returned resource ids inside the expanded boundary. A full-subscript
 is queried once. For an RG-only effective scope, use both the subscription id and exact resource-group
 constraint shown below, then apply the normalized ARM-id client-side scope filter as defense in depth.
 De-duplicate resources when effective scopes overlap. Pull metrics only for those retained resources.
-Pull UsageDetails independently for every effective
-scope where the API supports it, paginate each scope independently, de-duplicate overlapping line
-items, and filter resource ids against the boundary as defense in depth. Report included scopes,
+Pull cost independently for every effective scope through the ARM MCP `query_costs` contract
+(one planned query per scope, never a wider scope); `prepare_cost_query` tracks completeness per
+scope, de-duplicates overlapping rows, and filters resource ids against the boundary as defense in
+depth. Report included scopes,
 excluded rows/resources, unattributed cost rows, and any scope/API coverage gaps.
 
 ### Step 1 — Pull Azure Advisor cost recommendations
@@ -165,28 +168,34 @@ This map is passed as `activity=` below.
 
 ### Step 4 — Pull per-resource monthly cost (optional but recommended)
 
-Reuse the `finops-cost-anomaly-detection` cost pull (modern Consumption UsageDetails GET, paginated) over
-the trailing ~30 days and aggregate `costInUSD` by resource id into `{resourceId: monthly_usd}`.
-In **modern billing the full ARM resource id is in `properties.instanceName`** (the `resourceId`
-field is null) — key on `instanceName` and fall back to `resourceId`. Ids are matched
-case-insensitively. This is what lets the skill **rank by dollars** and size idle waste. The Cost
-Management Query/POST API is not needed.
+Retrieve 30-day **totals per resource** through the ARM MCP `query_costs` contract in
+`finops-managed-scope` (section 4) — the same shape `finops-cost-allocation` uses. This is what lets
+the skill **rank by dollars** and size idle waste. Ids are matched case-insensitively.
 
-Start with the complete trailing window using `\$top=1000`, project only the needed fields with
+```python
+from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query, sum_cost_by
+
+queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
+                            start=START, end=END, as_of=TODAY, group_by="ResourceId")
+# call *_query_costs with each planned argument object, sequentially; split any result whose
+# properties.nextLink is not null with split_cost_query(arguments) and query both halves
+prepared = prepare_cost_query(results, managed_resources,
+                              management_group_expansions=mg_descendants, window=(START, END))
+costs, _ = sum_cost_by(prepared["included_rows"], "resourceId")   # {resourceId: monthly_usd}
+```
+
+Use `prepared`'s exact coverage and `partial` fields in the final result; if it is partial,
+**label the savings totals "partial — cost pull incomplete"** so the biggest line items aren't
+undercounted silently. Do not merge or scope-filter cost rows in model reasoning.
+
+**Fallback (only when `finops-managed-scope` section 4 requires it):** pull Consumption UsageDetails
+over the same window with `\$top=1000`, project only the needed fields with
 `--query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD,
 subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup,
 resourceId: properties.instanceName || properties.resourceId, tags: tags}, nextLink: nextLink}"`,
 and paginate every `nextLink`. If a request returns `413 Request Too Large`, retry with `\$top=100`,
-then `20`. Only if bounded pages still fail, use short half-open `usageStart` date slices as a
-fallback; live runs showed that filter is not reliably applied, so verify returned dates and
-de-duplicate the combined rows. `--query` is client-side and does not itself prevent a server 413,
-but it keeps the retained sandbox payload small. If the pull still cannot complete, keep partial rows
-but **label the savings totals "partial — cost pull truncated"** so the biggest line items aren't
-undercounted silently.
-
-Persist the page envelopes and run `finops-managed-scope`'s `prepare_usage_details(...)`. Aggregate
-monthly cost only from `included_rows`; use its exact coverage and `partial` fields in the final
-result. Do not merge or scope-filter UsageDetails in model reasoning.
+then `20`. Persist the page envelopes, run `finops-managed-scope`'s `prepare_usage_details(...)`, and
+build `costs` with `sum_cost_by(included_rows, "resourceId")`.
 
 ### Step 5 — Rank (bundled rightsize.py, in-sandbox)
 
@@ -239,7 +248,7 @@ report's coverage is complete by spend even where no automated recommendation ex
 Recommend only — do not perform any resize/deallocate/delete. If nothing clears the threshold, say so
 in one line.
 
-Read-only only. Do not use any write/POST Azure operations.
+Read-only only. Do not use any Azure write operation or ARM MCP write tool.
 
 ## Notes
 

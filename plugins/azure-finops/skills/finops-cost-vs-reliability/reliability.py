@@ -1,6 +1,6 @@
 """FinOps cost vs reliability — join Azure spend to read-only reliability pain signals.
 
-Pure, offline, deterministic (no Azure calls). Given monthly Consumption UsageDetails line
+Pure, offline, deterministic (no Azure calls). Given monthly cost line
 items plus reliability signals already pulled with GET-only Azure APIs (Alerts Management,
 Resource Health, Advisor HighAvailability, and optional Activity Log ResourceHealth events), it
 ranks resources where spend and operational pain intersect.
@@ -447,7 +447,7 @@ def analyze_cost_vs_reliability(
                 "advisor_highavailability": bool(advisor_recommendations),
             },
             "limitations": [
-                "Cost comes from Consumption UsageDetails GET only; Cost Management Query POST is unavailable.",
+                "Cost is 30-day actual cost per resource from ARM MCP query_costs (or the disclosed UsageDetails fallback).",
                 "Alerts are weighted counts, not a complete incident system or duration measure.",
                 "Service Health and subscription/region-scoped events may not join to resource cost.",
                 "Advisor HighAvailability is current-state guidance, not historical reliability pain.",
@@ -485,7 +485,7 @@ def _build_hints(by_resource, unmatched):
         hints.append({
             "type": "unmatched_reliability",
             "target": f"{len(unmatched)} signals",
-            "detail": "Reliability signals did not join to UsageDetails resource cost — check resource id projection, deleted resources, or subscription/region-scoped events.",
+            "detail": "Reliability signals did not join to per-resource cost — check resource id projection, deleted resources, or subscription/region-scoped events.",
             "monthly_usd": 0.0,
             "reliability_score": round(total_score, 2),
         })

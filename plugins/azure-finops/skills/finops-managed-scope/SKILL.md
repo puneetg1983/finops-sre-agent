@@ -1,6 +1,6 @@
 ---
 name: finops-managed-scope
-description: Read-only scope guard for FinOps skills. Dynamically reads the Azure SRE Agent managedResources configuration, canonicalizes subscription/resource-group/management-group scopes, expands management groups with caller-supplied descendant data, filters UsageDetails rows, reports exact coverage, and applies fail-closed scheduled or explicitly confirmed interactive policy using bundled dependency-free scope.py.
+description: Read-only scope guard and cost-retrieval contract for FinOps skills. Dynamically reads the Azure SRE Agent managedResources configuration, canonicalizes subscription/resource-group/management-group scopes, expands management groups with caller-supplied descendant data, plans and validates ARM MCP query_costs calls per managed scope (cost_query.py), filters cost rows, reports exact coverage, and applies fail-closed scheduled or explicitly confirmed interactive policy. Consumption UsageDetails remains a disclosed fallback.
 ---
 
 ## Purpose
@@ -12,9 +12,12 @@ Broad Azure RBAC is not evidence that a scope is managed: managedResources remai
 policy boundary even when the agent identity can read more.
 
 This skill is read-only. It introduces no runtime changes and uses no write tools. The
-bundled `scope.py` is pure offline logic and makes **no Azure calls**. Keep the whole
+bundled `scope.py`, `cost_query.py`, and `usage.py` are pure offline logic and make **no
+Azure calls**. Keep the whole
 skill directory together: `scope.py` loads its dependency-free `_scope_resolution.py`
 sibling relative to `__file__`, so direct dynamic imports do not depend on `sys.path`.
+`cost_query.py` and `usage.py` import `scope` by name, so add this skill directory to
+`sys.path` before importing them.
 
 ## 1. Read the live managed scope every run
 
@@ -99,9 +102,96 @@ The confirmation key binds approval to the exact displayed request. A key displa
 request B cannot authorize request C. Confirmation does not alter managedResources or
 become a standing permission.
 
-## 4. Filter UsageDetails before analysis
+## 4. Retrieve cost with ARM MCP `query_costs` (primary)
 
-Consumption UsageDetails uses a **subscription-scoped transport endpoint**. For a
+Cost data comes from the **Azure Resource Manager (ARM) MCP server** connector declared in
+this plugin's `.mcp.json` (`https://mcp.management.azure.com`). Its tools are registered as
+`<connection>_<tool>`, for example `azure-resource-manager_query_costs`. Use the tool whose
+name ends in `_query_costs`; do not depend on the connector name.
+
+**Availability check (every run).** If no `*_query_costs` tool is available, or a call
+fails with an authentication/consent error, do not silently switch sources:
+
+- Interactive: tell the user ARM MCP is not configured or its sign-in expired, give the
+  setup path (**Plugins → azure-finops → Connectors → Configure**, authentication
+  **OAuth**, scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`), then continue
+  with the section 5 fallback only if they agree.
+- Scheduled: use the section 5 fallback and add the warning
+  `ARM MCP query_costs unavailable; used Consumption UsageDetails fallback` to every output.
+
+Only ARM MCP **read** tools may be called: `query_costs`, `forecast_costs`,
+`list_budgets`, `get_budget`, `list_dimensions`, `list_alerts`, `query_aks_costs`,
+`get_retail_prices`, `list_benefit_utilization`, `get_benefit_recommendations`, and
+`list_reservation_transactions`. Never call `create_budget`, `create_or_update_resource`,
+`create_or_update_resource_group`, `create_deployment`, `cancel_deployment`,
+`whatif_deployment`, `execute_resource_action`, or `start_pricesheet_download`.
+
+Plan, validate, and filter with the bundled `cost_query.py` instead of reasoning over raw
+rows:
+
+```python
+from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query
+
+queries = plan_cost_queries(
+    managed_resources,
+    management_group_expansions=mg_descendants,
+    start="2026-10-12", end="2026-11-10",          # inclusive UTC dates
+    granularity="Daily",                            # omit for totals over the window
+    group_by="ResourceGroupName,ServiceName",       # at most 5 dimensions; tags unsupported
+)
+```
+
+- Call `query_costs` once per planned argument object, **exactly as returned** (it pins
+  `metric=PreTaxCostUSD`, explicit `from`/`to`, `top=5000`, and one effective scope).
+  Never widen `scope`; management groups are already expanded to their subscriptions, and
+  resource-group scopes are queried directly.
+- Persist each call as `{"arguments": <the arguments>, "result": <raw tool output>}`. When
+  the runtime saves a large result to a file, load that file in Python; do not copy rows
+  through the conversation.
+- **Truncation:** a result whose `properties.nextLink` is not null was cut off at `top` rows
+  and `query_costs` cannot page. Discard it, call `split_cost_query(arguments)`, and query
+  both halves. If a single day still truncates, reduce `groupBy` or add a filter.
+- **Lookback:** `query_costs` only reaches back 92 days (pass `as_of=<today UTC>` to
+  `plan_cost_queries` to enforce it). Longer histories use the section 5 fallback.
+- **Request only the shape the analysis needs.** Daily × `ResourceId` × meter queries over
+  30 days can need several split calls even for one subscription; prefer totals
+  (no granularity) or coarser dimensions where the skill allows it.
+- **Throttling:** run queries sequentially, never in parallel. On HTTP 429 or a
+  throttling message, wait for the indicated retry time (otherwise 60 s, doubling, at most
+  3 retries) and retry the same arguments. Cost data refreshes about every 4 hours, so
+  never re-query the same shape within one run.
+
+```python
+from cost_query import prepare_cost_query
+
+coverage = prepare_cost_query(
+    results,                                   # the persisted {"arguments", "result"} list
+    managed_resources,
+    management_group_expansions=mg_descendants,
+    window=("2026-10-12", "2026-11-10"),
+)
+```
+
+`prepare_cost_query` fails closed on a queried scope outside the managed boundary, a
+non-USD metric, a tool error, mixed query shapes for one scope, overlapping slices,
+truncated results, date gaps, and unqueried scopes. Set `require_complete=False` only after
+retries and splitting fail; then disclose `partial`, `warnings`, `truncated_slices`,
+`date_gaps`, and `missing_scopes` on every downstream total. For an interactive outside
+scope confirmed under section 3, pass it in both `expected_scopes` and `confirmed_scopes`.
+
+Rows are flattened to the same keys the FinOps helpers already consume: `date` (daily
+granularity), `cost` (USD), `resourceId`, `resourceGroup` (derived from the resource ID or
+RG scope when not grouped), `subscriptionId`, `serviceName`, `meterCategory`,
+`meterSubCategory`, `meterName`, `resourceType`, `resourceLocation`, and `chargeType`.
+`query_costs` cannot group by tag; join resource IDs to Resource Graph tags when needed.
+Pass `coverage["included_rows"]` to analysis helpers and `coverage["scope_coverage"]` to
+report models. ARM MCP reads run as the user who signed in to the connector; that user's
+Azure RBAC and Cost Management access still bound the result.
+
+## 5. Fallback: Consumption UsageDetails
+
+Use this section only when section 4 says to fall back. Consumption UsageDetails uses a
+**subscription-scoped transport endpoint**. For a
 subscription effective scope, query that subscription directly. For one or more RG-only
 effective scopes, query each distinct containing subscription once, paginate the complete
 result, and then apply `filter_usage_details` to retain only rows inside the exact managed

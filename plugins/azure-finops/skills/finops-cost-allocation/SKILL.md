@@ -1,6 +1,6 @@
 ---
 name: finops-cost-allocation
-description: Showback / cost allocation for Azure, read-only. Joins per-resource monthly cost (modern Consumption UsageDetails) with resource tags (Resource Graph) to attribute spend to an owner dimension (team / env / service / costCenter / app / owner), then surfaces the spend that has no owner — an explicit unallocated bucket, a ranked untagged-resource list, and tag-hygiene flags — using the bundled allocate.py with the runtime's sandbox Python tool. Use for "who owns this bill", showback/chargeback prep, and finding untagged spend.
+description: Showback / cost allocation for Azure, read-only. Joins per-resource monthly cost (ARM MCP query_costs; Consumption UsageDetails as a disclosed fallback) with resource tags (Resource Graph) to attribute spend to an owner dimension (team / env / service / costCenter / app / owner), then surfaces the spend that has no owner — an explicit unallocated bucket, a ranked untagged-resource list, and tag-hygiene flags — using the bundled allocate.py with the runtime's sandbox Python tool. Use for "who owns this bill", showback/chargeback prep, and finding untagged spend.
 ---
 
 ## When to use this skill
@@ -15,14 +15,16 @@ use `finops-rightsizing-advisor`.
 
 ## Required access
 
-- **Cost Management Reader** on the subscription (`costInUSD` is null without it) and **Reader** for
-  Resource Graph tags.
+- The **ARM MCP connector** with its read-only `*_query_costs` tool; its signed-in user needs **Cost
+  Management Reader** on the managed scopes.
+- **Reader** for Resource Graph tags, and **Cost Management Reader** for the agent identity when the
+  UsageDetails fallback is used.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. No POST/write APIs are used.
+  available, otherwise `RunInTerminal` with `python3`. No ARM MCP write tool or Azure write API is used.
 
 ## Scope
 
-Attributes any resource that lands a cost line item in Consumption UsageDetails — the allocation is
+Attributes any resource that has cost in Cost Management — the allocation is
 **service-agnostic** (it works off cost + tags, not a hard-coded resource list). It is also
 **tag-generic**: it groups by whatever tag keys exist in your data (a **tag inventory**) and treats
 `team / env / service / costCenter / app / owner` as a *recommended* set to report coverage against —
@@ -42,9 +44,11 @@ are the default boundary. Scheduled runs are strict/fail-closed with no override
 outside-scope target requires disclosure and explicit confirmation in a subsequent turn before any
 broader query. Broad RBAC never silently expands scope.
 
-Pull UsageDetails independently for each effective scope where supported, with independent pagination
-and completeness tracking. De-duplicate overlapping line items and filter attributable resource ids
-against the boundary. Query Resource Graph once per unique effective subscription, always using
+Retrieve cost through the ARM MCP `query_costs` contract in `finops-managed-scope` (section 4):
+query each effective scope independently (one planned query per scope, never a wider scope), track
+truncation and completeness per scope, and let `prepare_cost_query` de-duplicate and filter
+attributable resource ids against the boundary. Query Resource Graph once per unique effective
+subscription, always using
 `--subscriptions`; if only specific RGs are managed in that subscription, query each unique RG with
 the exact case-insensitive predicate and client-side ARM-prefix filter below. De-duplicate overlapping
 results and retain only in-bound resources. Preserve cost rows with no usable resource/scope identity as `unattributed` rather than
@@ -53,20 +57,37 @@ and partial/failed coverage.
 
 ### Step 1 — Pull per-resource monthly cost
 
-Follow the canonical Consumption UsageDetails transport contract in `finops-managed-scope` over the
-trailing ~30 days. This skill's projection must explicitly retain `tags`:
+Request the trailing 30 days (inclusive UTC dates) as **totals per resource**. `query_costs` cannot
+group by tag; tags come from Resource Graph in Step 2.
+
+```python
+from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query, sum_cost_by
+
+queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
+                            start=START, end=END, as_of=TODAY, group_by="ResourceId")
+# call *_query_costs with each planned argument object, sequentially; split any result whose
+# properties.nextLink is not null with split_cost_query(arguments) and query both halves
+prepared = prepare_cost_query(results, managed_resources,
+                              management_group_expansions=mg_descendants, window=(START, END))
+costs, shared_usd = sum_cost_by(prepared["included_rows"], "resourceId")   # {resourceId: monthly_usd}
+```
+
+`shared_usd` is in-scope cost with no resource id (purchases, support, shared charges): report it
+next to the unallocated bucket; never assign it to an owner. Do not concatenate, de-duplicate, or
+scope-filter rows in model reasoning.
+
+**Fallback (only when `finops-managed-scope` section 4 requires it):** follow the canonical
+Consumption UsageDetails transport contract in `finops-managed-scope` section 5 over the same window.
+That projection must explicitly retain `tags`:
 
 ```
 --query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId, tags: tags}, nextLink: nextLink}"
 ```
 
-After managed-scope filtering, aggregate `cost` by resource id into
-`{resourceId: monthly_usd}` with case-insensitive ids. Resource Graph in Step 2 remains the source
-for the current resource tag map used by `allocate_costs`.
-
 Perform the page merge and managed-scope filtering with `finops-managed-scope`'s
-`prepare_usage_details(...)`, then pass only `included_rows` into the allocation input transform.
-Do not concatenate, de-duplicate, or scope-filter pages in model reasoning.
+`prepare_usage_details(...)`, then build `costs` with `sum_cost_by(included_rows, "resourceId")`.
+Resource Graph in Step 2 remains the source for the current resource tag map used by
+`allocate_costs`.
 
 ### Step 2 — Pull resource tags (Resource Graph)
 

@@ -184,6 +184,20 @@ def test_subagent_yaml_is_read_only_and_bound_to_agent():
     assert "    - ExecutePythonCode" in alt and "    - RunInTerminal" not in alt
 
 
+def test_subagent_yaml_assigns_only_read_only_arm_mcp_tools():
+    text = setup.subagent_yaml(AGENT)
+    assert "  mcpTools:\n    - azure-resource-manager_query_costs\n" in text
+    assert "    - azure-resource-manager_list_budgets" in text
+    for write_tool in ("create_budget", "create_or_update_resource", "create_deployment",
+                       "execute_resource_action", "cancel_deployment", "/*"):
+        assert write_tool not in text.split("  mcpTools:")[1]
+    renamed = setup.subagent_yaml(AGENT, arm_mcp_connection="arm-mcp")
+    assert "    - arm-mcp_query_costs" in renamed
+    assert "mcpTools" not in setup.subagent_yaml(AGENT, arm_mcp_connection="")
+    with pytest.raises(setup.SetupError):
+        setup.subagent_yaml(AGENT, arm_mcp_connection="bad name")
+
+
 # ------------------------------------------------------------------ task plan
 def test_task_plan_creates_seven_fully_rendered_tasks():
     plan = setup.task_plan(AGENT)

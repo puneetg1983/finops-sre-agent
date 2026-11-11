@@ -1,7 +1,7 @@
 """FinOps for AI — attribute Azure AI spend per resource / model / service family.
 
-Pure, offline, deterministic (no Azure calls). Given Cost Management UsageDetails line
-items already filtered to the AI service families, it classifies every dollar and rolls it
+Pure, offline, deterministic (no Azure calls). Given Cost Management line items (ARM
+MCP query_costs rows, or the UsageDetails fallback) already filtered to the AI service families, it classifies every dollar and rolls it
 up so an owner can see WHERE the AI money goes and WHICH cost driver to look at first.
 
 Why this exists (see SKILL.md + the pack README's "AI resource taxonomy" note): Azure AI
@@ -15,12 +15,12 @@ category literally named "Azure OpenAI" DROPS Foundry-hosted model spend. This m
 kind. It also covers `Microsoft.MachineLearningServices` (Foundry hub/project compute, managed
 online endpoints, fine-tuning) so ML compute isn't dropped.
 
-Line-item shape (one dict per UsageDetails row, already flattened by the skill; the skill's
-`--query` projection must add consumedService + meterSubCategory + meterName on top of the
-usual cost projection):
+Line-item shape (one dict per cost row, already flattened by the skill; query_costs rows get
+consumedService from the resource type's provider namespace, and the UsageDetails fallback
+projects consumedService + meterSubCategory + meterName):
 
     {
-        "cost": 12.34,                                   # properties.costInUSD
+        "cost": 12.34,                                   # USD
         "consumedService": "Microsoft.CognitiveServices",
         "meterCategory": "Azure OpenAI",
         "meterSubCategory": "gpt-4o",                    # often carries the model
@@ -56,6 +56,12 @@ _TOKEN_HINTS = ("token", "tokens")
 _COMPUTE_HINTS = ("compute", "vcpu", "vm ", "instance", "endpoint", "training", "inference hour", "core hour")
 # meter-name suffixes that trail the model name, stripped when parsing the model
 _MODEL_SUFFIX_MARKERS = (" inp", " outp", " input", " output", " cached", " token", " glbl", " regional", " data zone")
+# meterSubCategory values that name the service, not the model (live billing uses
+# "Azure OpenAI" with the model only in the meter name, e.g. "gpt 4.1 mini Inp glbl Tokens")
+_GENERIC_SUBCATEGORIES = {
+    "", "tokens", "token", "azure openai", "openai", "foundry models", "foundry tools",
+    "cognitive services", "azure ai services", "ai services",
+}
 
 _TOP_DRIVERS = 10
 _TOP_RESOURCES = 25
@@ -90,6 +96,19 @@ def _service_family(consumed_service) -> str:
     return _SERVICE_FAMILY.get(_norm(consumed_service))
 
 
+def ai_resource_types(resource_types):
+    """Return the AI resource types (exact spellings, sorted) from Cost Management values.
+
+    Use with an ARM MCP ``query_costs`` totals query grouped by ``ResourceType``: the
+    returned values can be passed verbatim as ``filterValues`` for a ``ResourceType``
+    filter. Keys off the provider namespace, never the account kind.
+    """
+    return sorted(
+        {str(value) for value in resource_types or () if _service_family(str(value).split("/")[0])},
+        key=str.casefold,
+    )
+
+
 def _meter_type(family, item) -> str:
     """Classify a line as model-token, compute, or other-cognitive spend."""
     name = _norm(item.get("meterName"))
@@ -110,11 +129,12 @@ def _meter_type(family, item) -> str:
 def _parse_model(item) -> str:
     """Best-effort model name for a model-token line.
 
-    Prefer meterSubCategory when it looks like a model; else strip the trailing
-    token-type words off meterName. Returns "" when nothing usable is present.
+    Prefer meterSubCategory when it names a model (not a generic service label); else
+    strip the trailing token-type words off meterName. Returns "" when nothing usable is
+    present.
     """
     sub = str(item.get("meterSubCategory") or "").strip()
-    if sub and _norm(sub) not in ("", "tokens", "token"):
+    if _norm(sub) not in _GENERIC_SUBCATEGORIES:
         return sub
 
     name = str(item.get("meterName") or "").strip()
@@ -152,7 +172,7 @@ def _ranked(cost_by_key, *, label, extra=None, limit=None):
 def attribute_ai_costs(line_items=None, *, resource_kinds=None):
     """Attribute AI spend across resources, models, service families, and meter types.
 
-    line_items      list of UsageDetails rows (already filtered to AI service families).
+    line_items      list of cost rows (already filtered to AI service families).
                     Rows whose consumedService isn't an AI family are ignored defensively.
     resource_kinds  optional {resourceId: kind} (from Resource Graph) to label a resource
                     OpenAI / AIServices / the ML kind; omit to leave the label off.

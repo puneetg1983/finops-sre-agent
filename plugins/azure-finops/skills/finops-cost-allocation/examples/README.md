@@ -2,8 +2,8 @@
 
 Run from the repository root. Resource IDs are matched case-insensitively.
 
-These resource IDs are offline fixture data. Live UsageDetails rows are retrieved per dynamically
-discovered managed scope, de-duplicated, and filtered before allocation; the final report also
+These resource IDs are offline fixture data. Live cost rows are retrieved through ARM MCP `query_costs` per
+dynamically discovered managed scope, de-duplicated, and filtered before allocation; the final report also
 discloses included, excluded, and unattributed cost coverage.
 
 ```python

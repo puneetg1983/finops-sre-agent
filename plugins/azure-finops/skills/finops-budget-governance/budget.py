@@ -72,6 +72,47 @@ def _num(value):
     return None
 
 
+def budgets_from_tool_result(result):
+    """Return the raw budget ``value[]`` from an ARM MCP ``list_budgets`` result.
+
+    Accepts the tool output (``structuredContent``/``content`` text), its ``result``
+    object, or a plain ``{"value": [...]}`` collection. Every item must be a raw ARM
+    budget with ``properties.amount``; anything else raises ``ValueError`` so the caller
+    uses the ``az rest`` budgets GET instead of guessing at a different shape.
+    """
+    import json
+
+    value = result
+    for _ in range(6):
+        if isinstance(value, (str, bytes)):
+            value = json.loads(value)
+            continue
+        if not isinstance(value, dict):
+            break
+        if value.get("isError") is True:
+            texts = [str(item.get("text", "")) for item in value.get("content") or [] if isinstance(item, dict)]
+            raise ValueError("list_budgets returned a tool error: " + " ".join(texts)[:500])
+        if isinstance(value.get("value"), list):
+            items = value["value"]
+            for index, item in enumerate(items):
+                props = item.get("properties") if isinstance(item, dict) else None
+                if not isinstance(props, dict) or _num(props.get("amount")) is None:
+                    raise ValueError(
+                        f"list_budgets item {index} is not a raw ARM budget with properties.amount; "
+                        "use the az rest budgets GET instead"
+                    )
+            return items
+        if value.get("structuredContent"):
+            value = value["structuredContent"]
+        elif "result" in value:
+            value = value["result"]
+        elif isinstance(value.get("content"), list) and value["content"]:
+            value = value["content"][0].get("text") if isinstance(value["content"][0], dict) else None
+        else:
+            break
+    raise ValueError("list_budgets result has no value[] collection")
+
+
 def _spend_amount(block):
     """Read a {'amount': .., 'unit': ..} spend block; return (amount|None, unit|None)."""
     if not isinstance(block, dict):
@@ -141,7 +182,7 @@ def evaluate_budgets(budgets=None, *, as_of=None, mtd_spend=None):
 
     budgets    the `value[]` list from GET Microsoft.Consumption/budgets
     as_of      date the evaluation is anchored to (defaults to today) — drives run-rate forecast
-    mtd_spend  optional {budgetName: actual_month_to_date_usd} from an independent UsageDetails
+    mtd_spend  optional {budgetName: actual_month_to_date_usd} from an independent query_costs
                pull, used only to cross-check Azure's currentSpend and flag large discrepancies
 
     Returns a dict:

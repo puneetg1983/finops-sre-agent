@@ -163,3 +163,20 @@ def test_resource_group_scope_extracted():
 
 def out_gate_names(out):
     return [g["name"] for g in out["gates"]]
+
+
+def test_budgets_from_arm_mcp_tool_result_accepts_raw_arm_budgets_only():
+    import json
+    import pytest
+
+    raw = [_budget("m", 1000.0, 400.0)]
+    structured = {"structuredContent": {"result": {"value": raw}}}
+    text = {"content": [{"type": "text", "text": json.dumps({"value": raw})}]}
+    assert budget.budgets_from_tool_result(structured) == raw
+    assert budget.budgets_from_tool_result(text) == raw
+    assert budget.budgets_from_tool_result({"structuredContent": {"result": {"value": []}}}) == []
+
+    with pytest.raises(ValueError, match="az rest budgets GET"):
+        budget.budgets_from_tool_result({"value": [{"name": "m", "amount": 1000.0}]})
+    with pytest.raises(ValueError, match="tool error"):
+        budget.budgets_from_tool_result({"isError": True, "content": [{"type": "text", "text": "denied"}]})

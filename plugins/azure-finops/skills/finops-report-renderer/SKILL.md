@@ -45,7 +45,7 @@ model = build_budget_status_model(
         "unattributed": 1,
         "cost_usd": 123.45,
         "partial": True,
-        "detail": "UsageDetails pagination stopped early.",
+        "detail": "query_costs result truncated; split before reporting.",
     }],
 )
 path = write_report(model, "finops-budget-status.html")
@@ -62,7 +62,8 @@ All six functions have the same keyword-only context arguments:
 - `scope_summary`, `warnings`, and `scope_coverage` are sorted and de-duplicated deterministically.
 - Input-level `partial`, `warnings`, `scope_summary`, and `scope_coverage` fields are also preserved
   when present. Any partial coverage row makes the report partial.
-- Scope coverage rows accept the fields shown above. Counts must be integers and monetary values
+- Scope coverage rows accept the fields shown above; `prepare_cost_query(...)["scope_coverage"]` already
+  has this shape. Counts must be integers and monetary values
   must be finite numbers, not numeric strings.
 - Text is retained verbatim in the model. Escaping happens only in `render_report`.
 - Cost formatting and cost summation use decimal arithmetic at currency boundaries. Invalid,
@@ -72,7 +73,7 @@ All six functions have the same keyword-only context arguments:
 
 | Adapter | Deterministic helper output |
 |---|---|
-| `build_cost_overview_model(overview, ...)` | A cost aggregation with `total_usd`, `daily` (`date`, `cost_usd`), `by_service` (`service`, `cost_usd`), and `by_resource_group` (`resource_group`, `cost_usd`). The aliases `daily_totals`, `top_services`, and `top_resource_groups` are accepted. |
+| `build_cost_overview_model(overview, ...)` | The object returned by `finops-managed-scope`'s `summarize_cost_overview(prepare_cost_query(...))`, or any cost aggregation with `total_usd`, `daily` (`date`, `cost_usd`), `by_service` (`service`, `cost_usd`), and `by_resource_group` (`resource_group`, `cost_usd`). The aliases `daily_totals`, `top_services`, and `top_resource_groups` are accepted. |
 | `build_rightsizing_savings_model(result, ...)` | The list returned by `recommend_rightsizing`, or an object containing it as `findings`/`recommendations`. |
 | `build_budget_status_model(result, ...)` | The object returned by `evaluate_budgets`. |
 | `build_cost_optimization_model(result, ...)` | The object returned by `summarize_optimization`. |

@@ -1,6 +1,6 @@
 """FinOps cost-allocation (showback) — pure, offline, deterministic (no Azure calls).
 
-Given per-resource monthly cost (from Consumption UsageDetails) and per-resource tags
+Given per-resource monthly cost (ARM MCP query_costs, or the UsageDetails fallback) and per-resource tags
 (from Resource Graph), attribute every dollar to an owner dimension and — the governance win —
 surface the spend that **has no owner**, plus an inventory of the tags you actually use and how
 they measure up against a recommended ownership taxonomy.
@@ -26,7 +26,7 @@ Design decisions (see SKILL.md):
 
 Input shapes (all keyed/looked-up by resourceId, matched case-insensitively):
 
-    costs   {resourceId: monthly_usd}                     # aggregated from UsageDetails costInUSD
+    costs   {resourceId: monthly_usd}                     # 30-day USD totals per resource
     tags    {resourceId: {"team": "payments", "env": "Prod", ...}}   # from Resource Graph
 
 Output: a single dict (see allocate_costs) — a showback breakdown, an unallocated bucket, a

@@ -2,12 +2,13 @@
 
 Pure, dependency-free logic so it is unit-testable offline. The agent reads this file
 and runs `detect_anomalies(...)` with the runtime's sandbox Python tool after loading
-Cost Management UsageDetails line items. No Azure calls happen here.
+Cost Management line items (ARM MCP query_costs rows, or the UsageDetails fallback).
+No Azure calls happen here.
 
-Line-item shape (one dict per UsageDetails row, already flattened by the skill):
+Line-item shape (one dict per daily cost row, already flattened by the skill):
     {
         "date": "2026-07-12",        # properties.date (day granularity)
-        "cost": 172.89,               # properties.costInUSD
+        "cost": 172.89,               # USD (PreTaxCostUSD, or costInUSD in the fallback)
         "meterCategory": "Container Apps",
         "resourceGroup": "sre-agent-demo-2",
         "resourceId": "/subscriptions/.../containerApps/foo",

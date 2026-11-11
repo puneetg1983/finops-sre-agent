@@ -174,3 +174,23 @@ def test_as_of_is_max_date():
         _line(1.0, name="gpt-4o Tokens", date="2026-07-15"),
     ])
     assert out["as_of"] == "2026-07-15"
+
+
+def test_generic_service_subcategory_falls_back_to_meter_name_model():
+    out = attribute_ai_costs([
+        _line(1.0, cat="Foundry Models", sub="Azure OpenAI", name="gpt 4.1 mini Inp glbl Tokens"),
+        _line(2.0, cat="Foundry Models", sub="Azure OpenAI", name="gpt 4.1 mini Outp glbl Tokens"),
+    ])
+    assert [row["model"] for row in out["by_model"]] == ["gpt 4.1 mini"]
+    assert out["by_model"][0]["monthly_usd"] == 3.0
+
+def test_ai_resource_types_selects_ai_namespaces_verbatim():
+    assert attribute.ai_resource_types([
+        "microsoft.app/containerapps",
+        "microsoft.cognitiveservices/accounts",
+        "Microsoft.MachineLearningServices/workspaces/onlineEndpoints",
+        "microsoft.cognitiveservices/accounts",
+    ]) == [
+        "microsoft.cognitiveservices/accounts",
+        "Microsoft.MachineLearningServices/workspaces/onlineEndpoints",
+    ]

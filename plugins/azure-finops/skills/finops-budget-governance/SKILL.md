@@ -1,6 +1,6 @@
 ---
 name: finops-budget-governance
-description: Proactive budget governance for Azure, read-only. Reads native Azure Cost Management budgets (GET Microsoft.Consumption/budgets — amount, currentSpend, and forecastSpend when present) and evaluates each against its amount and its own notification thresholds; where Azure supplies no forecast it computes a linear run-rate month-end projection in-sandbox, so every budget gets a landing estimate. Surfaces budgets that are over, forecast-to-exceed, or at-risk, ranks them by severity, and flags the ones that warrant a process gate (a human decision before more is spent) — using the bundled budget.py with the runtime's sandbox Python tool. Use for "are we on budget", burn-rate / forecast checks, and month-end overrun early warning.
+description: Proactive budget governance for Azure, read-only. Reads native Azure Cost Management budgets through the ARM MCP list_budgets tool (Microsoft.Consumption/budgets GET as a disclosed fallback — amount, currentSpend, and forecastSpend when present) and evaluates each against its amount and its own notification thresholds; where Azure supplies no forecast it computes a linear run-rate month-end projection in-sandbox, so every budget gets a landing estimate. Surfaces budgets that are over, forecast-to-exceed, or at-risk, ranks them by severity, and flags the ones that warrant a process gate (a human decision before more is spent) — using the bundled budget.py with the runtime's sandbox Python tool. Use for "are we on budget", burn-rate / forecast checks, and month-end overrun early warning.
 ---
 
 ## When to use this skill
@@ -18,10 +18,14 @@ and deterministic create/update plans with a human-run script are supported sepa
 
 ## Required access
 
-- **Cost Management Reader** (or **Reader**) on the subscription — enough to `GET
-  Microsoft.Consumption/budgets`. No write role is needed or used.
+- The **ARM MCP connector** with its read-only `*_list_budgets` tool (CostManagement toolset). Calls
+  run as the connector's signed-in user, who needs **Cost Management Reader** (or **Reader**) on
+  each target scope.
+- **Cost Management Reader** (or **Reader**) for the agent's managed identity, used only by the
+  `az rest` fallback. No write role is needed or used.
 - Read-only `az` (`RunAzCliReadCommands`) and sandbox Python: use `ExecutePythonCode` when
-  available, otherwise `RunInTerminal` with `python3`. No POST/PUT/write APIs are called.
+  available, otherwise `RunInTerminal` with `python3`. No ARM MCP write tool (`create_budget`) and no
+  PUT/write API is called.
 
 ## Scope
 
@@ -61,9 +65,25 @@ identity on every budget, reject responses outside the boundary, and report incl
 responses, unsupported/failed scopes, and scopes with no budgets. Do not replace per-scope evaluation
 with a single subscription-wide list.
 
-### Step 1 — Read the budgets (read-only GET)
+### Step 1 — Read the budgets (read-only)
 
-Pull the native budgets at the target scope. Subscription scope:
+**Primary: ARM MCP `list_budgets`.** For every de-duplicated query target (each configured
+management group, each subscription, and each resource-group effective scope), call the ARM MCP
+`*_list_budgets` tool with `{"scope": "<TARGET_SCOPE>"}`, sequentially, and convert each result with
+the bundled parser instead of reading rows by hand:
+
+```python
+from budget import budgets_from_tool_result
+budgets = budgets_from_tool_result(list_budgets_result)   # raw ARM budget objects
+```
+
+`list_budgets` and `get_budget` require the connector's `x-mcp-toolset: CostManagement` header
+(declared in this plugin's `.mcp.json`). If the tool is unavailable, returns a tool/authorization
+error, or `budgets_from_tool_result` raises, use the `az rest` GET below for that target and disclose
+`ARM MCP list_budgets unavailable; used Microsoft.Consumption/budgets GET` in the report. Never call
+`create_budget`.
+
+**Fallback: Consumption budgets GET.** Subscription scope:
 
 ```bash
 az rest --method get \
@@ -79,22 +99,22 @@ az rest --method get \
   -o json
 ```
 
-Also repeat the GET for each expanded descendant effective scope, subject to the de-duplicated query
+Also repeat the read for each expanded descendant effective scope, subject to the de-duplicated query
 targets above. For a resource-group budget, use
-`.../subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Consumption/budgets`. The response
-is `{"value": [ ... ]}`; pass the whole `value` array to Step 2. Each budget carries
+`.../subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Consumption/budgets`. Either path
+yields the raw `value[]` budget array; pass it to Step 2. Each budget carries
 `properties.amount`, `properties.timeGrain`, `properties.timePeriod`, `properties.currentSpend`
 (`{amount, unit}` — spend so far in the current grain window), an optional `properties.forecastSpend`,
 and `properties.notifications` (each with a percent `threshold` and a `thresholdType` of `Actual` or
 `Forecasted`). **If `value` is empty, skip to Step 3 and report "no budgets defined".**
 
-> **`currentSpend` freshness — do not reconstruct spend with a cost pull.** Azure computes each
-> budget's `currentSpend` asynchronously: a **newly created** budget reads `currentSpend: 0` for hours
-> until the Cost Management pipeline populates it. Treat a `0` on a just-created budget as "not yet
-> synced", not as real zero spend. Do **not** try to reconstruct month-to-date spend with a
-> UsageDetails pull — that heavy, `413`-prone query is unnecessary for budget status, and the clean
-> Cost Management aggregate query is a `POST`, which the agent's read-only tooling blocks. Rely on
-> Azure's `currentSpend` once it syncs.
+> **`currentSpend` freshness.** Azure computes each budget's `currentSpend` asynchronously: a
+> **newly created** budget reads `currentSpend: 0` for hours until the Cost Management pipeline
+> populates it. Treat a `0` on a just-created budget as "not yet synced", not as real zero spend, and
+> rely on Azure's `currentSpend` once it syncs. Do not pull UsageDetails for budget status. An
+> optional cross-check may use one `query_costs` totals query (`finops-managed-scope` section 4,
+> month-start to today) for an **unfiltered** budget whose scope equals a queried effective scope,
+> passed as `mtd_spend={budget_name: usd}`.
 
 ### Step 2 — Evaluate (bundled budget.py, in-sandbox)
 

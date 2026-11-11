@@ -3,7 +3,7 @@
 Run from the repository root. Foundry `AIServices` resources remain included because
 classification uses `consumedService`, not the optional kind label.
 
-The resource IDs below are offline fixture data. A live run retrieves UsageDetails independently
+The resource IDs below are offline fixture data. A live run retrieves cost through ARM MCP `query_costs` independently
 for every dynamically discovered managed scope, de-duplicates and filters the rows, and reports
 included, excluded, and unattributed cost coverage.
 

@@ -4,8 +4,8 @@ Run from the repository root. The explicit `today` keeps this example
 deterministic; production callers may let the function select the latest complete
 day.
 
-The resource ID below is offline fixture data. A live run retrieves and filters UsageDetails for
-the dynamically discovered managed scopes before calling this helper, then reports included,
+The resource ID below is offline fixture data. A live run retrieves cost through ARM MCP `query_costs`
+for the dynamically discovered managed scopes, filters it, before calling this helper, then reports included,
 excluded, and unattributed cost coverage.
 
 ```python

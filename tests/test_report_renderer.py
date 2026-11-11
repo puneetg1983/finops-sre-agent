@@ -668,8 +668,8 @@ def test_all_adapters_render_empty_states(builder, empty):
         (
             models.build_cost_overview_model,
             _overview,
-            "2db6ec2066af56a3980bde5a4e452f1e40f5c45d91d42ba83e6bcfd1767f98e6",
-            "9182994ba8ec44703c987b25f9ac68d34f8453e5808d2a10af9cd4abfac81a53",
+            "7ef73ae67ce1086e0ed8eb7a431f821c75c6c0cb8f207b4585819b3ddf4c7dab",
+            "e1921335554606ce4bff231765cb6f116aba64bde31cfef10222598a330d5472",
         ),
         (
             models.build_rightsizing_savings_model,
@@ -698,8 +698,8 @@ def test_all_adapters_render_empty_states(builder, empty):
         (
             models.build_cost_vs_reliability_model,
             _reliability,
-            "cfbb7d50575bdcb7bc6b99159fae40c368d8324a429b48ce13f95be809109b1c",
-            "ed12a0061be4f377a10aca6ecfad2dd8c3b9271132dff4590035d9cdb60ba991",
+            "82f4594649f737f150f756ed662a1f062fc19dbeebfeb4be5669d0055bc4725b",
+            "d5f563faf4551fdf5413e0ee8bb6e93f58f17b06c4085c8ddbcb06b691809459",
         ),
     ],
 )

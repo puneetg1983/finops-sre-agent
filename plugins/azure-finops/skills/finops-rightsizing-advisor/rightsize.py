@@ -3,7 +3,7 @@
 
 Pure, dependency-free logic so it is unit-testable offline. The agent gathers the
 raw inputs via read-only `az` (Advisor cost recs, Resource Graph inventory, Azure
-Monitor utilization, Consumption UsageDetails cost) and runs `recommend_rightsizing(...)`
+Monitor utilization, per-resource cost from ARM MCP query_costs) and runs `recommend_rightsizing(...)`
 with the runtime's sandbox Python tool. No Azure calls happen here.
 
 The point of this module is to VALIDATE Advisor's suggestions and inventory heuristics
@@ -39,7 +39,7 @@ Input shapes (all keyed/looked-up by resourceId, matched case-insensitively):
                  nobody used it — the driver of ACA idle detection (unused environments,
                  always-on apps with no hits, and warm session pools no one calls).
 
-    costs        {resourceId: monthly_usd}   (aggregated from UsageDetails)
+    costs        {resourceId: monthly_usd}   (30-day USD totals per resource)
 
     advisor      list of Advisor cost recommendations:
         {

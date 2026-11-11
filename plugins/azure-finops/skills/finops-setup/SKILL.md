@@ -41,6 +41,23 @@ are updated instead of duplicated.
    - If it fails with "no managed resources", stop and tell the user to add subscriptions or resource
      groups under the agent's managed resources, then say "Set up FinOps for me" again.
 
+## Step 1b: Check the ARM MCP connector (read-only)
+
+Cost and budget data comes from the Azure Resource Manager (ARM) MCP server declared in this plugin's
+`.mcp.json`. Installing the plugin does not create that connector.
+
+1. Look in your tool list for a tool whose name ends in `_query_costs`.
+2. If it exists, probe it once: from `discovery.json` take the first managed subscription or resource
+   group and call it with `{"scope": "<that scope>", "from": "<today-7d>", "to": "<today>",
+   "metric": "PreTaxCostUSD"}` (dates `YYYY-MM-DD`, UTC). A result with `columns`/`rows` means
+   **ready**; an authentication or consent error means **sign-in expired**; an authorization error
+   means the connector's signed-in user lacks Cost Management Reader on that scope.
+3. If your tool list also shows ARM MCP write tools (names ending in `_create_budget`,
+   `_create_or_update_resource`, `_create_deployment`, or `_execute_resource_action`), mark the
+   connector **ready, write tools enabled** so the summary tells the user to deselect them.
+4. Do not stop setup when ARM MCP is missing. Tasks and reports fall back to Consumption UsageDetails
+   with a disclosed warning until the connector works.
+
 ## Step 2: Check and grant roles
 
 1. For each entry in `discovery.json` `requirements`, run its `checkCommand` with the Azure CLI
@@ -111,6 +128,7 @@ Rules:
 | Item | Status |
 |---|---|
 | Agent identity | name / principal ID |
+| ARM MCP connector | ready / ready, write tools enabled / missing / sign-in expired / access denied |
 | Managed scopes | n subscriptions / resource groups / management groups |
 | Permissions | already in place / granted now (list) / pending Owner script (list) |
 | Scheduled tasks | created x, updated y, unchanged z, retired w |
@@ -118,6 +136,14 @@ Rules:
 | Report scope | the managed scopes above; cost outside them is excluded by design |
 
 Then add:
+- If the ARM MCP connector is not **ready**: "Cost data currently uses the slower, throttling-prone
+  UsageDetails fallback. To switch to ARM MCP: **Plugins → azure-finops → Connectors → Configure**,
+  set authentication to **OAuth** with scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`,
+  sign in with an account that has Cost Management Reader on the managed scopes, and select only its
+  read tools (`query_costs`, `forecast_costs`, `list_budgets`, `get_budget`, `list_dimensions`,
+  `list_alerts`)." If write tools are enabled, tell the user to deselect them in the connector's tool
+  selection. Mention that scheduled runs use the connector user's sign-in and fall back with a warning
+  if it expires.
 - Schedules are UTC. Daily: anomaly 14:00, cost overview 14:30, budget status 16:00. Weekly on
   Monday, 15:00 to 19:00: rightsizing, cost optimization, AI spend, cost vs reliability.
 - "Say **'send FinOps alerts to you@contoso.com'** or **'correlate FinOps anomalies with repo owner/repo'**
@@ -135,7 +161,10 @@ Then add:
   `autonomous`.
 - **Schedule change:** re-run step 3 with `--cron <id>=<expr>`.
 - **Subagent:** `python3 $SKILL_DIR/setup.py subagent-yaml --agent-resource-id <id> > tmp/finops-setup/finops-investigator.yaml`
-  (add `--python-tool ExecutePythonCode` if your toolset has that tool instead of `RunInTerminal`).
+  (add `--python-tool ExecutePythonCode` if your toolset has that tool instead of `RunInTerminal`;
+  add `--arm-mcp-connection <name>` when the ARM MCP connector is not named `azure-resource-manager`,
+  i.e. its tools are not named `azure-resource-manager_query_costs`). The YAML assigns only the read-only
+  ARM MCP tools.
   Save it for download. No chat tool can create subagents, so tell the user: **Agent Canvas → + →
   Subagent → Create → paste → Save**.
 
@@ -145,5 +174,7 @@ Then add:
 |---|---|---|
 | Task result says "scope error" | Reader on the agent missing, or managed resources empty | Say "Set up FinOps for me" again |
 | AuthorizationFailed on UsageDetails / null `costInUSD` | Cost Management Reader missing on a subscription or management group | Say "Set up FinOps for me" again; if the user is not Owner, use the fallback script |
+| Report warns "ARM MCP query_costs unavailable" | ARM MCP connector missing, its sign-in expired, or its user lacks Cost Management Reader | Configure or reconnect the connector (see the summary instructions), then say "Set up FinOps for me" again |
+| `query_costs` returns 429 / throttled | Tenant Cost Management query quota exhausted | Runs retry with backoff; avoid running several FinOps reports at the same minute |
 | Grant denied after approval | The approving user is not Owner / User Access Administrator, or not an agent Administrator | Fallback script for an Owner |
 | Duplicate FinOps tasks | Tasks created manually with the same names | `task-plan` refuses; cancel duplicates and re-run |
