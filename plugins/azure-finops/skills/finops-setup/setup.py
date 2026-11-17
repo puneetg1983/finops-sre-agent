@@ -24,7 +24,12 @@ the agent runs the az commands it prints through its built-in Azure CLI tools.
 
   task-plan     --agent-resource-id ID [--alert-email E] [--github-repo owner/repo]
                 [--existing FILE] [--only id,id] [--cron id=EXPR ...]
-      JSON plan for the seven FinOps scheduled tasks (create | update | unchanged).
+      JSON plan for the dashboard and anomaly scheduled tasks (create | update | unchanged).
+      --scope-mode managed|everything [--dashboard-scope TENANT_ROOT]
+      Everything is a setup-confirmed dashboard-only policy, persisted in its task prompt.
+
+  grant-script  --discovery FILE [--checks-dir DIR]
+      Exact-principal, exact-scope fallback for an authorized human, including Everything.
 
   scopes        --managed-json FILE
       Canonicalize managedResources and print the Cost Management transport scopes.
@@ -233,15 +238,42 @@ def _check_command(scope, principal, sub):
     )
 
 
-def discover(agent_doc, identity_info):
+def dashboard_policy(mode="managed", scopes=None):
+    if mode not in ("managed", "everything"):
+        raise SetupError("dashboard scope mode must be managed or everything")
+    if mode == "managed":
+        if scopes:
+            raise SetupError("managed mode cannot contain fixed dashboard scopes")
+        return {"mode": mode, "scopes": []}
+    roots = managed_scopes(scopes)
+    if len(roots) != 1 or not _MG.fullmatch(roots[0]):
+        raise SetupError("Everything requires the explicitly confirmed tenant root management group")
+    guid(roots[0].rsplit("/", 1)[-1], "tenant root management group ID")
+    return {"mode": mode, "scopes": roots}
+
+
+def discover(agent_doc, identity_info, scope_mode="managed", dashboard_scopes=None,
+             tenant_id=None):
     if not isinstance(agent_doc, dict):
         raise SetupError("agent JSON must be the object returned by `az resource show`")
     agent_id = agent_resource_id(agent_doc.get("id"))
     agent_sub = _SUB.match(agent_id).group(1)
     principal = resolve_principal(agent_doc, identity_info)
     props = agent_doc.get("properties") or {}
-    scopes = managed_scopes((props.get("knowledgeGraphConfiguration") or {}).get("managedResources"))
-    cost_scopes = cost_reader_scopes(scopes)
+    policy = dashboard_policy(scope_mode, dashboard_scopes)
+    if scope_mode == "everything":
+        identity_tenant = (agent_doc.get("identity") or {}).get("tenantId")
+        tenant = guid(identity_tenant or tenant_id, "agent tenant ID")
+        if tenant_id is not None and guid(tenant_id, "tenant ID") != tenant:
+            raise SetupError("supplied tenant ID does not match the agent identity tenant")
+        if policy["scopes"][0].rsplit("/", 1)[-1].casefold() != tenant:
+            raise SetupError("Everything root must match the agent tenant ID")
+    raw_managed = (props.get("knowledgeGraphConfiguration") or {}).get("managedResources")
+    scopes = managed_scopes(raw_managed) if raw_managed else []
+    if not scopes and scope_mode == "managed":
+        managed_scopes(raw_managed)  # fail closed, retaining the actionable error
+    report_scopes = policy["scopes"] if scope_mode == "everything" else scopes
+    cost_scopes = cost_reader_scopes(report_scopes)
     pid = principal["principalId"]
 
     requirements = [{
@@ -267,6 +299,8 @@ def discover(agent_doc, identity_info):
         "agentResourceId": agent_id,
         "identity": principal,
         "managedScopes": scopes,
+        "dashboardPolicy": policy,
+        "dashboardScopes": report_scopes,
         "costReaderScopes": cost_scopes,
         "requirements": requirements,
     }
@@ -428,6 +462,18 @@ def rbac_script(agent_id, client):
     return script.replace("__CLIENT_ID__", client_id(client))
 
 
+def grant_script(discovery, checks_dir=None):
+    """Fallback uses the exact verified principal and scopes, including Everything."""
+    plan = grant_plan(discovery, checks_dir)
+    return "\n".join([
+        "#!/usr/bin/env bash",
+        "# Review these read-only assignments, then run as an authorized Owner.",
+        "set -euo pipefail",
+        *[grant["command"] for grant in plan["grants"]],
+        "",
+    ])
+
+
 # --------------------------------------------------------------------------- subagent yaml
 def arm_mcp_tools(connection=ARM_MCP_CONNECTION):
     """Runtime names (`<connection>_<tool>`) of the read-only ARM MCP tools to assign."""
@@ -490,7 +536,7 @@ def subagent_yaml(agent_id, python_tool="RunInTerminal", name="finops-investigat
 # --------------------------------------------------------------------------- task plan
 def _load_manifest():
     data = json.loads(MANIFEST.read_text())
-    if data.get("schemaVersion") != 1 or len(data.get("tasks", [])) != 7:
+    if data.get("schemaVersion") != 2 or len(data.get("tasks", [])) != 2:
         raise SetupError("unsupported task manifest")
     return data["tasks"], data.get("retiredTasks", [])
 
@@ -556,7 +602,8 @@ def _existing_tasks(data):
     return out
 
 
-def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overrides=None):
+def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overrides=None,
+              scope_mode=None, dashboard_scopes=None):
     agent_id = agent_resource_id(agent_id)
     email, repo = optional_email(email), optional_repo(repo)
     tasks, retired = _load_manifest()
@@ -571,6 +618,29 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
             raise SetupError(f"invalid cron override {key}={expr}")
     current = _existing_tasks(existing or [])
     values = _values(agent_id, email, repo)
+    if scope_mode is None:
+        previous = [task for task in current
+                    if task["name"] == "FinOps: Dashboard (Live Report, Daily)"]
+        if len(previous) > 1:
+            raise SetupError("multiple existing dashboard tasks; cancel duplicates first")
+        if previous:
+            lines = [line.removeprefix("DASHBOARD_POLICY_JSON: ")
+                     for line in previous[0]["prompt"].splitlines()
+                     if line.startswith("DASHBOARD_POLICY_JSON: ")]
+            if len(lines) != 1:
+                raise SetupError("existing dashboard policy missing; ask for scope again")
+            try:
+                prior = json.loads(lines[0])
+            except ValueError as exc:
+                raise SetupError("existing dashboard policy invalid; ask for scope again") from exc
+            if not isinstance(prior, dict) or set(prior) != {"mode", "scopes"}:
+                raise SetupError("existing dashboard policy invalid; ask for scope again")
+            policy = dashboard_policy(prior["mode"], prior["scopes"])
+        else:
+            policy = dashboard_policy("managed", dashboard_scopes)
+    else:
+        policy = dashboard_policy(scope_mode, dashboard_scopes)
+    values["DASHBOARD_POLICY"] = json.dumps(policy, sort_keys=True)
     scope_text = SCOPE_PROMPT.read_text()
 
     plan = []
@@ -580,7 +650,11 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
         task_values = dict(values)
         if task.get("defaultReportName"):
             task_values["REPORT_NAME"] = task["defaultReportName"]
-        prompt = _substitute(scope_text, task_values) + "\n\n" + _substitute(
+        preamble = (
+            (TASKS_DIR / "prompts" / "_dashboard-scope.txt").read_text()
+            if task["id"] == "dashboard-report" else scope_text
+        )
+        prompt = _substitute(preamble, task_values) + "\n\n" + _substitute(
             (TASKS_DIR / task["prompt"]).read_text(), task_values)
         cron = cron_overrides.get(task["id"], task["defaultCron"])
         matches = [c for c in current if c["name"] == task["defaultName"]]
@@ -609,6 +683,7 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
         for r in retired for c in current if c["name"] == r["defaultName"]
     ]
     return {"agentResourceId": agent_id, "alertEmail": email, "githubRepo": repo,
+            "dashboardPolicy": policy,
             "tasks": plan, "retire": retire}
 
 
@@ -627,6 +702,9 @@ def main(argv=None):
     p = sub.add_parser("discover")
     p.add_argument("--agent-json", type=Path, required=True)
     p.add_argument("--identity-info", required=True)
+    p.add_argument("--scope-mode", choices=("managed", "everything"), default="managed")
+    p.add_argument("--dashboard-scope", action="append", default=[])
+    p.add_argument("--tenant-id", help="agent subscription tenant, required for Everything if absent from agent identity")
 
     p = sub.add_parser("grant-plan")
     p.add_argument("--discovery", type=Path, required=True)
@@ -638,6 +716,10 @@ def main(argv=None):
     p = sub.add_parser("rbac-script")
     p.add_argument("--agent-resource-id", required=True)
     p.add_argument("--client-id", required=True)
+
+    p = sub.add_parser("grant-script")
+    p.add_argument("--discovery", type=Path, required=True)
+    p.add_argument("--checks-dir", type=Path)
 
     p = sub.add_parser("subagent-yaml")
     p.add_argument("--agent-resource-id", required=True)
@@ -653,11 +735,14 @@ def main(argv=None):
     p.add_argument("--existing", type=Path)
     p.add_argument("--only", default="")
     p.add_argument("--cron", action="append", default=[], metavar="ID=EXPR")
+    p.add_argument("--scope-mode", choices=("managed", "everything"))
+    p.add_argument("--dashboard-scope", action="append", default=[])
 
     args = parser.parse_args(argv)
     try:
         if args.command == "discover":
-            out = discover(_load_json(args.agent_json), args.identity_info)
+            out = discover(_load_json(args.agent_json), args.identity_info,
+                           args.scope_mode, args.dashboard_scope, args.tenant_id)
         elif args.command == "grant-plan":
             out = grant_plan(_load_json(args.discovery), args.checks_dir)
         elif args.command == "scopes":
@@ -665,6 +750,9 @@ def main(argv=None):
             out = {"managedScopes": scopes, "costReaderScopes": cost_reader_scopes(scopes)}
         elif args.command == "rbac-script":
             sys.stdout.write(rbac_script(args.agent_resource_id, args.client_id))
+            return 0
+        elif args.command == "grant-script":
+            sys.stdout.write(grant_script(_load_json(args.discovery), args.checks_dir))
             return 0
         elif args.command == "subagent-yaml":
             sys.stdout.write(subagent_yaml(args.agent_resource_id, args.python_tool, args.name,
@@ -677,7 +765,8 @@ def main(argv=None):
                 key, _, expr = item.partition("=")
                 overrides[key.strip()] = expr.strip()
             out = task_plan(args.agent_resource_id, args.alert_email, args.github_repo,
-                            existing, args.only.split(",") if args.only else None, overrides)
+                            existing, args.only.split(",") if args.only else None, overrides,
+                            args.scope_mode, args.dashboard_scope)
         print(json.dumps(out, ensure_ascii=False, indent=2))
     except SetupError as exc:
         print(f"finops-setup: {exc}", file=sys.stderr)

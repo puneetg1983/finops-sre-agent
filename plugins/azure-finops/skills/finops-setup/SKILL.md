@@ -1,180 +1,177 @@
 ---
 name: finops-setup
-description: Sets up, re-runs, or repairs the Azure FinOps pack on this agent end to end from chat. Use when the user says "Set up FinOps for me", "set up the FinOps agent", "install/configure/enable FinOps", "turn on cost anomaly alerts / FinOps reports", "refresh all FinOps reports", or asks why FinOps scheduled reports are not working. Grants the agent identity read-only cost roles on behalf of the signed-in user (OBO), creates or updates the seven FinOps scheduled tasks, and builds all six Live Reports immediately. Asks no questions.
+description: Sets up, repairs or refreshes Azure FinOps from chat. MUST ask whether the dashboard covers Everything or only Managed resources. Grants missing read-only roles on behalf of the user (OBO), creates one daily consolidated dashboard task plus managed-resource anomaly alerts, and builds the single Live Report immediately.
 ---
 
 # FinOps setup
 
-Do the entire setup yourself. The user's only action is approving the permission prompt, and
-only when roles are missing. Re-running is safe: existing roles are skipped and existing tasks
-are updated instead of duplicated.
+Run setup end to end. Re-running is idempotent: check roles, update tasks by exact name and reuse
+the single dashboard report ID. Do not create the former six individual reports.
+
+## Step 0: Mandatory dashboard scope choice
+
+**MUST ask the end user for input and wait for an explicit answer before discovery/grants or task
+changes**, including on setup/repair runs. Use the platform's user-input tool, not a rhetorical
+question or an inferred default:
+
+> Should the FinOps dashboard cover Everything in this Azure tenant, or only the agent's Managed resources?
+
+Choices: **Managed resources** and **Everything**. Explain that Everything includes unmanaged
+resources in the agent's tenant, requires a tenant-wide read-only cost grant, and broadens the
+contents visible to dashboard viewers. Silence is not consent. This choice affects the dashboard
+only; anomaly alerts and other standalone skills retain their managed-resource boundary.
+
+- **Managed resources:** use `--scope-mode managed`. Read live managedResources every run; never
+  widen a resource-group boundary to its containing subscription for analysis.
+- **Everything:** read the agent subscription's tenant ID using the Azure CLI read tool. The scope
+  is `/providers/Microsoft.Management/managementGroups/<tenantId>` (the tenant root management
+  group), not `az account list` or whichever subscriptions are visible. Display the exact tenant
+  and root scope with the permission explanation. Pass `--scope-mode everything
+  --dashboard-scope <rootScope>` to both `discover` and `task-plan`. The root must match the agent's
+  tenant, not another CLI context. Do not change the agent's managedResources.
+
+No other setup questions are necessary. Use the default schedules, no email and no GitHub
+correlation unless supplied. Never ask for secrets.
 
 ## Ground rules
 
-- **Ask no questions.** Use defaults: all seven tasks, default schedules, no email, no GitHub
-  correlation. If the user's request already contains an email address or an `owner/repo`, use it.
-  Mention the opt-ins once in the final summary.
-- **Grant roles only on behalf of the user (OBO).** Run the `az role assignment create` commands from
-  `grant-plan` with the Azure CLI **write** tool. The agent identity cannot grant roles, so each call
-  is denied for it and the platform asks the user to approve and grant permissions. The command then
-  runs as the user. Never use the terminal for `az`, never use a separate role-assignment tool, and
-  never grant anything other than the roles `grant-plan` prints (Reader, Cost Management Reader).
-- **Check roles by listing assignments, not by trying reads.** A failed read can be retried as the
-  user, which hides whether the agent identity has access. The scheduled tasks run without a user,
-  so the agent identity itself must hold the roles.
-- `SKILL_DIR` is this skill's sandbox path (shown next to `finops-setup` in the skill list). Run the
-  helper as `python3 $SKILL_DIR/setup.py ...`. It is offline and makes no Azure or agent API calls.
+- **Grant roles only on behalf of the user (OBO).** Run only `grant-plan`'s printed
+  `az role assignment create` commands with the Azure CLI **write** tool. The identity cannot grant
+  roles; the platform prompts the signed-in user for permission and runs the approved command as
+  that user. Never use the terminal for `az`, or a separate role-assignment tool.
+- Grant only **Reader** on the agent and **Cost Management Reader** on the selected cost scopes.
+  These are Azure RBAC roles, not an Entra group. Never grant Owner, Contributor or User Access
+  Administrator to the agent. Do not automatically grant more roles for optional telemetry.
+- **Check roles by listing assignments**, including inherited assignments, not by trying reads
+  that may silently retry as the user. Scheduled reads need the agent identity's own access.
+- `SKILL_DIR` is this skill's sandbox path. `setup.py` is offline and makes no service calls.
   Keep working files in `tmp/finops-setup/`.
-- Keep the user informed with one short line per step ("Checking permissions…", "Creating 7 scheduled
-  tasks…"). Do not paste raw command output.
+- The ARM MCP connector has a separate signed-in identity. OBO grants to the agent do not grant
+  that connector user access; check and disclose both.
 
-## Step 1: Discover (read-only)
+## Step 1: Discover
 
-1. `AGENT_RESOURCE_ID` is this agent's ARM resource ID from your identity context.
-2. Run with the Azure CLI read tool and pass `--subscription <agent subscription>`:
-   - `az account show --query user.assignedIdentityInfo -o tsv`. This is the identity your Azure tools
-     run as (`MSIClient-<clientId>`, or `MSI` for system-assigned).
-   - `az resource show --ids <AGENT_RESOURCE_ID> -o json`. Save the output to `tmp/finops-setup/agent.json`.
-     If a permission prompt appears, it's because the agent cannot read itself yet. Ask the user to
-     approve it; this is expected on a first run.
-3. `python3 $SKILL_DIR/setup.py discover --agent-json tmp/finops-setup/agent.json --identity-info "<value>" > tmp/finops-setup/discovery.json`
-   - If it fails with "no managed resources", stop and tell the user to add subscriptions or resource
-     groups under the agent's managed resources, then say "Set up FinOps for me" again.
+1. Get `AGENT_RESOURCE_ID` from identity context. With the Azure CLI read tool and explicit agent
+   subscription, run `az account show --query user.assignedIdentityInfo -o tsv` and
+   `az resource show --ids <AGENT_RESOURCE_ID> -o json`. Save the latter to
+   `tmp/finops-setup/agent.json`. A permission prompt to read the agent itself may be expected.
+2. Run `python3 $SKILL_DIR/setup.py discover --agent-json tmp/finops-setup/agent.json
+   --identity-info "<value>" <selected scope flags> > tmp/finops-setup/discovery.json`.
+   In Everything mode, also pass `--tenant-id <verified agent subscription tenant ID>` to discover
+   (not task-plan). It must match `identity.tenantId` when present and the selected root, so a
+   wrong-tenant grant plan is rejected before any OBO write.
+3. Managed mode with empty/malformed managedResources fails closed: ask the user to configure
+   **Settings > Managed resources**, then re-run setup. Everything can work without managedResources;
+   in that case create only the dashboard task (`--only dashboard-report`) and disclose that
+   anomaly alerts require managedResources. Malformed nonempty managedResources still fails.
+4. For Everything, verify the root identity against the agent tenant and attempt a complete
+   recursive hierarchy read. If permission is missing, proceed to the explicit OBO grant in step 2;
+   never treat a partial subscription inventory as Everything.
 
-## Step 1b: Check the ARM MCP connector (read-only)
+## Step 2: Check roles and obtain OBO consent
 
-Cost and budget data comes from the Azure Resource Manager (ARM) MCP server declared in this plugin's
-`.mcp.json`. Installing the plugin does not create that connector.
+1. Run each discovery `requirements[].checkCommand` with the Azure CLI read tool. Save raw JSON
+   to `tmp/finops-setup/checks/<key>.json`; don't save successful-looking output on errors.
+2. Run `python3 $SKILL_DIR/setup.py grant-plan --discovery tmp/finops-setup/discovery.json
+   --checks-dir tmp/finops-setup/checks > tmp/finops-setup/grants.json`.
+3. If grants are empty, report permissions already in place. Otherwise explain the exact principal,
+   roles and scopes, then execute each printed command with the Azure CLI **write** tool.
+   For **Everything**, explicitly say:
 
-1. Look in your tool list for a tool whose name ends in `_query_costs`.
-2. If it exists, probe it once: from `discovery.json` take the first managed subscription or resource
-   group and call it with `{"scope": "<that scope>", "from": "<today-7d>", "to": "<today>",
-   "metric": "PreTaxCostUSD"}` (dates `YYYY-MM-DD`, UTC). A result with `columns`/`rows` means
-   **ready**; an authentication or consent error means **sign-in expired**; an authorization error
-   means the connector's signed-in user lacks Cost Management Reader on that scope.
-3. If your tool list also shows ARM MCP write tools (names ending in `_create_budget`,
-   `_create_or_update_resource`, `_create_deployment`, or `_execute_resource_action`), mark the
-   connector **ready, write tools enabled** so the summary tells the user to deselect them.
-4. Do not stop setup when ARM MCP is missing. Tasks and reports fall back to Consumption UsageDetails
-   with a disclosed warning until the connector works.
+   > To query costs for Everything, I need to assign my managed identity `<principalId>` the
+   > **Cost Management Reader** Azure RBAC role at tenant root `<rootScope>`, inherited by all
+   > subscriptions, including future ones. This is read-only cost access, not permission to change
+   > resources. Approve the following on-behalf-of (OBO) permission prompt to grant this access.
 
-## Step 2: Check and grant roles
+   Also disclose any Reader grant on the agent and cost grants needed for the separate
+   managed-resource anomaly task. Do not promise that there will be exactly one platform prompt.
+4. Success or "role assignment already exists" is done. If consent is declined, do not retry,
+   change scope, or execute a grant elsewhere. If the user lacks grant rights, generate
+   `python3 $SKILL_DIR/setup.py grant-script --discovery tmp/finops-setup/discovery.json
+   --checks-dir tmp/finops-setup/checks > tmp/finops-setup/finops-rbac.sh`.
+   Offer this **reviewable download only** for an authorized Owner / User Access Administrator.
+   This fallback preserves Everything and supports either system- or user-assigned principal IDs.
+   Never use the old managed-only `rbac-script` for an Everything setup.
+5. Re-list assignments after grants. If access or hierarchy discovery remains blocked, mark
+   pending, skip the immediate build and don't claim coverage. Do not query under the user's
+   identity to disguise missing agent access. EA AO-view-charges / MCA Azure-charges policy may
+   also need enabling by a billing administrator; a role grant alone doesn't override it.
 
-1. For each entry in `discovery.json` `requirements`, run its `checkCommand` with the Azure CLI
-   read tool and save the raw JSON output to `tmp/finops-setup/checks/<key>.json`. If a check
-   errors, save nothing for that key.
-2. `python3 $SKILL_DIR/setup.py grant-plan --discovery tmp/finops-setup/discovery.json --checks-dir tmp/finops-setup/checks > tmp/finops-setup/grants.json`
-3. If `grants` is empty, report "Permissions already in place" and go to step 3.
-4. Otherwise, tell the user in one short message what will be granted and why. For example: *"I need
-   to give my identity read-only access to cost data: Reader on this agent and Cost Management Reader
-   on 2 subscriptions. You'll be asked to approve. Choose **approve for this thread** so it's one
-   approval."* Then run each `command` exactly as printed with the Azure CLI **write** tool.
-5. Handle results:
-   - Success, or "role assignment already exists": the grant is done.
-   - Denied for the user as well, i.e. the user is not Owner or User Access Administrator on that
-     scope, or declined: generate the fallback
-     `python3 $SKILL_DIR/setup.py rbac-script --agent-resource-id <id> --client-id <clientId>`,
-     save it for download, and say: *"You don't have rights to grant this. Send this file to a
-     subscription Owner to run once in Azure Cloud Shell (`bash finops-rbac.sh`), then say 'Set up
-     FinOps for me' again."* Continue to step 3 anyway. Tasks are created now and start working once
-     the roles exist. Mark the missing scopes in the summary.
-   - For a system-assigned identity, use `identity.principalId` as printed. Never substitute another
-     identity.
+## Step 3: Check the cost connector
 
-## Step 3: Create or update the scheduled tasks
+Look for `*_query_costs`. If missing, disclose the UsageDetails fallback rather than stopping setup.
+After scope and roles are confirmed, probe a small seven-day query on the first resolved effective
+subscription/RG. Authentication errors mean sign-in expired; authorization errors mean the connector
+user lacks cost access, not that the agent's OBO role grant failed.
 
-1. Call `ListScheduledTasks` (`currentThreadOnly=false`) and save the raw result to `tmp/finops-setup/existing.json`.
-2. `python3 $SKILL_DIR/setup.py task-plan --agent-resource-id <AGENT_RESOURCE_ID> --existing tmp/finops-setup/existing.json [--alert-email <e>] [--github-repo <owner/repo>] > tmp/finops-setup/plan.json`
-3. For each entry in `tasks`, pass the strings **exactly as given**. Never paraphrase `agentPrompt`.
-   - `create`: `CreateScheduledMonitoringTask(taskName, description, cronExpression, agentPrompt, useCurrentThread=false)`,
-     then `UpdateScheduledTask(taskId=<new id>, agentMode="review", threadGrouping="new")`.
-   - `update`: `UpdateScheduledTask(taskId=existingTaskId, cronExpression, agentPrompt)`.
-   - `unchanged`: skip it.
-4. For each entry in `retire` (an obsolete duplicate from the old installer), cancel it with
-   `CancelScheduledTask` and list it in the summary. This removes only that specific obsolete task name.
+Configure through **Plugins > azure-finops > Connectors > Configure**, **OAuth** with scope
+`api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`. Select only read tools (`query_costs`,
+`forecast_costs`, `list_budgets`, `get_budget`, `list_dimensions`, `list_alerts`, and supported
+read-only benefit/container tools listed by finops-managed-scope). Deselect write tools.
 
-Why `review` mode: tasks run on the main agent, which has write tools. In review mode, a write cannot
-execute unattended. FinOps runs are reads plus `SaveReport` of a static report, and neither needs approval.
+Everything uses fresh root descendants every run, with cost queries at descendant subscription
+scope to avoid management-group billing-agreement query restrictions. Connector access must cover
+those subscriptions too. Never silently narrow to the connector user's visible subscriptions.
 
-## Step 4: Build all six Live Reports now
+## Step 4: Plan tasks
 
-Don't make the user wait for the schedules. Tell the user: *"Building your 6 FinOps reports now. This
-takes a few minutes."* Then run, in this order, the `agentPrompt` of every `plan.json` task whose
-`liveReport` is non-empty, following each one exactly:
+1. Call ListScheduledTasks (`currentThreadOnly=false`), save raw output to
+   `tmp/finops-setup/existing.json`.
+2. Run `python3 $SKILL_DIR/setup.py task-plan --agent-resource-id <AGENT_RESOURCE_ID>
+   --existing tmp/finops-setup/existing.json <selected scope flags>
+   [--alert-email <e>] [--github-repo <owner/repo>] > tmp/finops-setup/plan.json`.
+3. Copy each task's strings exactly; never paraphrase `agentPrompt`.
+   Create via CreateScheduledMonitoringTask with `useCurrentThread=false`, then
+   UpdateScheduledTask with `agentMode="review", threadGrouping="new"`.
+   Update existing tasks with the planned cron and prompt, and explicitly enforce `agentMode="review"`
+   on updated or unchanged tasks too. Skip only unchanged content, not this safety setting.
+4. Schedule one **dashboard-report** task at **14:30 UTC daily**, and a separate managed-resource
+   **cost-anomaly** alert at **14:00 UTC daily**. Only the dashboard task saves a report.
+5. **Migration:** create/update the replacement task first. Build the dashboard in step 5 and verify
+   SaveReport returned its ID/version **before** cancelling `plan.retire` entries. On failure retain
+   the old schedules and disclose migration pending; do not remove working reports first. Retire
+   only the exact old task names in the manifest, not custom tasks. Never delete existing historical
+   reports automatically; tell the user they remain as old snapshots with no future refresh once
+   migration completes.
 
-1. `cost-overview-report` (also acts as the end-to-end check)
-2. `budget-status-report`
-3. `rightsizing-savings-report`
-4. `ai-spend-report`
-5. `cost-vs-reliability-report`
-6. `cost-optimization-report` (last: it rolls up the others)
+Review mode prevents unattended Azure writes; report snapshots need no Azure write access.
 
-Rules:
-- Include tasks whose action is `unchanged`; the goal is a fresh set of reports.
-- If `cost-overview-report` fails because cost reads are denied right after granting, wait about 2
-  minutes and retry it once. Cost RBAC can take a few minutes to apply. If it still fails, skip the
-  remaining reports and say they will appear on their schedules.
-- If any other report fails, record the reason, continue with the next, and list it in the summary.
-  Its scheduled run will retry.
-- After each report, post one line: "✓ FinOps: Budget Status saved". Do not paste analysis
-  tables; the reports hold the content.
-- If the user asked for a quick setup ("just the overview", "skip the reports"), build only
-  `cost-overview-report`.
-- If the roles are still missing (fallback case), skip this step and say the reports will appear
-  after the Owner runs the script.
+## Step 5: Build the single dashboard now
 
-## Step 5: Summarize
+Run the exact **`dashboard-report`** agentPrompt, even if its task action is unchanged. Say
+"Building your consolidated FinOps dashboard." It renders all sections via
+`build_dashboard_model` and `write_report`, then calls SaveReport once with `allowedTools: []`.
 
-| Item | Status |
-|---|---|
-| Agent identity | name / principal ID |
-| ARM MCP connector | ready / ready, write tools enabled / missing / sign-in expired / access denied |
-| Managed scopes | n subscriptions / resource groups / management groups |
-| Permissions | already in place / granted now (list) / pending Owner script (list) |
-| Scheduled tasks | created x, updated y, unchanged z, retired w |
-| Live Reports | 6 built now (list any that failed and why); open them under Operations Hub → Live Reports |
-| Report scope | the managed scopes above; cost outside them is excluded by design |
+If fresh cost permissions haven't propagated, wait about two minutes and retry once. If still
+denied, mark pending; do not save an all-healthy empty dashboard. Optional source failures retain
+their tab, reason and next action; they do not prevent the core dashboard from being saved.
+For managedResources-empty Everything setups, do not run the managed-only anomaly task.
 
-Then add:
-- If the ARM MCP connector is not **ready**: "Cost data currently uses the slower, throttling-prone
-  UsageDetails fallback. To switch to ARM MCP: **Plugins → azure-finops → Connectors → Configure**,
-  set authentication to **OAuth** with scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`,
-  sign in with an account that has Cost Management Reader on the managed scopes, and select only its
-  read tools (`query_costs`, `forecast_costs`, `list_budgets`, `get_budget`, `list_dimensions`,
-  `list_alerts`)." If write tools are enabled, tell the user to deselect them in the connector's tool
-  selection. Mention that scheduled runs use the connector user's sign-in and fall back with a warning
-  if it expires.
-- Schedules are UTC. Daily: anomaly 14:00, cost overview 14:30, budget status 16:00. Weekly on
-  Monday, 15:00 to 19:00: rightsizing, cost optimization, AI spend, cost vs reliability.
-- "Say **'send FinOps alerts to you@contoso.com'** or **'correlate FinOps anomalies with repo owner/repo'**
-  to turn on email or GitHub correlation. Say **'create the FinOps subagent'** for a dedicated
-  read-only FinOps assistant."
-- If every managed scope is a resource group, add: "Reports cover only these resource groups. To report
-  on a whole subscription, add it under **Settings → Managed resources**, then say 'Set up FinOps for
-  me' again."
+Reuse the exact-name **FinOps: Dashboard** report ID. Duplicate exact names are an explicit conflict,
+not permission to choose or create another. Verify the saved version, then complete task retirement.
+This is a scheduled static snapshot with local tab/search/print interactions, not browser-time Azure
+access or real-time billing.
+
+## Step 6: Summary
+
+Summarize identity, **chosen dashboard scope and exact boundary**, OBO grants made or pending,
+connector identity/status, created/updated/retired task counts, saved dashboard ID/version, last
+refresh time, and partial/unavailable sections with remediation. Link/open the one report under
+**Operations Hub > Live Reports > FinOps: Dashboard**. Do not say "all aspects implemented" when
+sources or integrations are missing.
+
+Mention email/GitHub opt-ins once. Do not email cost details to an inferred recipient. Do not claim
+client-side filters restrict access: every report viewer can inspect the whole saved snapshot.
 
 ## On request only
 
-- **Email / GitHub opt-in:** re-run step 3 with `--alert-email` / `--github-repo`. This updates the
-  anomaly and rightsizing tasks. Email delivery uses the agent's configured email tool. If that tool
-  needs approval in review mode, tell the user the two emailing tasks can be switched to
-  `autonomous`.
-- **Schedule change:** re-run step 3 with `--cron <id>=<expr>`.
-- **Subagent:** `python3 $SKILL_DIR/setup.py subagent-yaml --agent-resource-id <id> > tmp/finops-setup/finops-investigator.yaml`
-  (add `--python-tool ExecutePythonCode` if your toolset has that tool instead of `RunInTerminal`;
-  add `--arm-mcp-connection <name>` when the ARM MCP connector is not named `azure-resource-manager`,
-  i.e. its tools are not named `azure-resource-manager_query_costs`). The YAML assigns only the read-only
-  ARM MCP tools.
-  Save it for download. No chat tool can create subagents, so tell the user: **Agent Canvas → + →
-  Subagent → Create → paste → Save**.
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| Task result says "scope error" | Reader on the agent missing, or managed resources empty | Say "Set up FinOps for me" again |
-| AuthorizationFailed on UsageDetails / null `costInUSD` | Cost Management Reader missing on a subscription or management group | Say "Set up FinOps for me" again; if the user is not Owner, use the fallback script |
-| Report warns "ARM MCP query_costs unavailable" | ARM MCP connector missing, its sign-in expired, or its user lacks Cost Management Reader | Configure or reconnect the connector (see the summary instructions), then say "Set up FinOps for me" again |
-| `query_costs` returns 429 / throttled | Tenant Cost Management query quota exhausted | Runs retry with backoff; avoid running several FinOps reports at the same minute |
-| Grant denied after approval | The approving user is not Owner / User Access Administrator, or not an agent Administrator | Fallback script for an Owner |
-| Duplicate FinOps tasks | Tasks created manually with the same names | `task-plan` refuses; cancel duplicates and re-run |
+- Email / GitHub correlation: re-run task-plan with the opt-in. Preserve the existing
+  DASHBOARD_POLICY_JSON; omitted scope flags preserve it deterministically. If the old policy is
+  missing/malformed, stop and ask the mandatory scope question again. Email is sent by the anomaly
+  task, not duplicated by the dashboard.
+- Schedule: use `--cron dashboard-report="<five-field cron>"` (or `cost-anomaly`).
+- Read-only subagent: use `subagent-yaml --agent-resource-id <id>` with the documented optional
+  `--python-tool` and `--arm-mcp-connection`. Save for download; the user adds it in Agent Canvas.
+  Its standalone requests remain managed-only; it is not the Everything dashboard task runner.
+- The legacy `rbac-script --agent-resource-id <id> --client-id <id>` remains for managed-only,
+  user-assigned-identity compatibility. Prefer the discovery-based `grant-script`.

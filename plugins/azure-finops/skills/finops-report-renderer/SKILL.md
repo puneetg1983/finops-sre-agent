@@ -1,9 +1,16 @@
 ---
 name: finops-report-renderer
-description: Deterministically renders static FinOps Live Report HTML from structured analysis results. Produces CSP-compliant, nonce-safe, escaped HTML with optional Chart.js visualization, metrics, warnings, and tables; it performs no Azure or connector calls.
+description: Renders the consolidated FinOps dashboard with 17 sections, keyboard-accessible tabs, local search, inline charts, source coverage and print/PDF. Also supports individual analysis adapters. Deterministic CSP-compliant static HTML; no Azure or connector calls.
 ---
 
 ## Purpose
+
+**Scheduled default:** build the single **FinOps: Dashboard**, not six independent reports.
+Follow [DASHBOARD.md](DASHBOARD.md), call `build_dashboard_model` in `dashboard.py`, then
+`write_report` in `render.py`. Keep `dashboard.py`, `models.py`, `render.py`, and `theme.css`
+together. Dashboard charts are inline SVG, with no external scripts or network dependencies.
+Source gaps retain their own visible tab and reason. Never replace a failed analysis with a
+healthy zero. All report types use the shared light/dark theme.
 
 Use this utility after a FinOps analysis helper has produced structured results. Build a report
 model with the matching adapter in `models.py`, call `render_report` or `write_report` from
@@ -16,7 +23,7 @@ Adapters do no I/O, make no clock or network calls, and do not mutate their inpu
 
 ## Adapter API
 
-Load the exact `models.py` and `render.py` files into the same sandbox. Each adapter consumes an
+Load the exact `models.py`, `render.py`, and `theme.css` files into the same sandbox. Each adapter consumes an
 existing deterministic analysis result and returns the generic model accepted by `render_report`
 and `write_report`:
 

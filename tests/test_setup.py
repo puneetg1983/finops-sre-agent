@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -27,6 +28,7 @@ def agent_doc(managed=None):
     return {
         "id": AGENT,
         "identity": {
+            "tenantId": SUB2,
             "principalId": SAMI_PRINCIPAL,
             "type": "SystemAssigned, UserAssigned",
             "userAssignedIdentities": {
@@ -167,7 +169,7 @@ def test_rbac_script_is_read_only_idempotent_and_valid_bash():
     assert 'ensure_role "Reader" "$AGENT_RESOURCE_ID"' in script
     assert 'ensure_role "Cost Management Reader"' in script
     assert "role assignment delete" not in script
-    if shutil.which("bash"):
+    if sys.platform != "win32" and shutil.which("bash"):
         subprocess.run(["bash", "-n"], input=script, text=True, check=True)
 
 
@@ -199,17 +201,17 @@ def test_subagent_yaml_assigns_only_read_only_arm_mcp_tools():
 
 
 # ------------------------------------------------------------------ task plan
-def test_task_plan_creates_seven_fully_rendered_tasks():
+def test_task_plan_creates_one_dashboard_and_anomaly_task():
     plan = setup.task_plan(AGENT)
-    assert len(plan["tasks"]) == 7
+    assert len(plan["tasks"]) == 2
     assert {t["action"] for t in plan["tasks"]} == {"create"}
     for task in plan["tasks"]:
         prompt = task["agentPrompt"]
         assert "{{" not in prompt and AGENT in prompt
-        assert prompt.startswith("STRICT MANAGED-SCOPE PREAMBLE")
+        assert prompt.startswith(("STRICT MANAGED-SCOPE PREAMBLE", "DASHBOARD SCOPE POLICY"))
         assert "RunAzCliWriteCommands" not in prompt and "finops-budget-editor" not in prompt
         assert len(task["cronExpression"].split()) == 5
-    assert sum(1 for t in plan["tasks"] if t["liveReport"]) == 6
+    assert [t["liveReport"] for t in plan["tasks"] if t["liveReport"]] == ["FinOps: Dashboard"]
 
 
 def test_task_plan_defaults_have_no_email_or_github():
@@ -219,7 +221,7 @@ def test_task_plan_defaults_have_no_email_or_github():
     on = {t["id"]: t["agentPrompt"] for t in setup.task_plan(
         AGENT, email="finops@contoso.com", repo="contoso/app")["tasks"]}
     assert "email `finops@contoso.com`" in on["cost-anomaly"]
-    assert "email `finops@contoso.com`" in on["rightsizing-savings-report"]
+    assert "must not send duplicate anomaly emails" in on["dashboard-report"]
     assert "`contoso/app`" in on["cost-anomaly"]
 
 
@@ -261,7 +263,7 @@ def test_only_and_cron_override():
 def test_cli_end_to_end(tmp_path):
     agent_json = tmp_path / "agent.json"
     agent_json.write_text(json.dumps(agent_doc()))
-    run = lambda *args: subprocess.run(["python3", str(SETUP_DIR / "setup.py"), *args],
+    run = lambda *args: subprocess.run([sys.executable, str(SETUP_DIR / "setup.py"), *args],
                                        capture_output=True, text=True)
     out = run("discover", "--agent-json", str(agent_json), "--identity-info", "MSIClient-" + CLIENT)
     assert out.returncode == 0, out.stderr
@@ -297,13 +299,86 @@ def test_every_skill_has_frontmatter_matching_folder():
 
 def test_setup_skill_contract():
     text = (SETUP_DIR / "SKILL.md").read_text()
-    assert "Ask no questions" in text
+    assert "MUST ask the end user" in text
+    assert "**Managed resources** and **Everything**" in text
     assert "on behalf of the user (OBO)" in text
     assert "Never use the terminal for `az`" in text
     assert "Check roles by listing assignments" in text
     assert "rbac-script" in text  # fallback documented
-    assert "Build all six Live Reports now" in text
+    assert "Build the single dashboard now" in text
     plan_reports = [t["id"] for t in setup.task_plan(AGENT)["tasks"] if t["liveReport"]]
     for task_id in plan_reports:  # every report task is built during setup
         assert f"`{task_id}`" in text
     assert "RunAzCliWriteCommands" not in text  # refer to the tool generically, not by internal name
+
+
+ROOT_MG = f"/providers/Microsoft.Management/managementGroups/{SUB2}"
+
+
+def test_everything_grants_exact_identity_at_root_and_supports_no_managed_resources():
+    disc = setup.discover(agent_doc(managed=[]), "MSI", "everything", [ROOT_MG])
+    assert disc["dashboardScopes"] == [ROOT_MG]
+    assert disc["managedScopes"] == []
+    assert disc["costReaderScopes"] == [ROOT_MG]
+    grants = setup.grant_plan(disc)["grants"]
+    assert grants[1]["role"] == "Cost Management Reader"
+    assert f'--scope "{ROOT_MG}"' in grants[1]["command"]
+    assert SAMI_PRINCIPAL in grants[1]["command"]
+    fallback = setup.grant_script(disc)
+    assert all(grant["command"] in fallback for grant in grants)
+    assert "az ad sp show" not in fallback
+    with_managed = setup.discover(agent_doc(), "MSI", "everything", [ROOT_MG])
+    assert with_managed["costReaderScopes"] == [ROOT_MG]
+
+
+@pytest.mark.parametrize("mode,scopes", [
+    ("invalid", []), ("managed", [ROOT_MG]), ("everything", []),
+    ("everything", [f"/subscriptions/{SUB}"]),
+    ("everything", ["/providers/Microsoft.Management/managementGroups/not-tenant-root"]),
+])
+def test_dashboard_policy_rejects_ambiguous_or_unsafe_scope(mode, scopes):
+    with pytest.raises(setup.SetupError):
+        setup.dashboard_policy(mode, scopes)
+
+
+def test_dashboard_scope_persists_but_never_changes_anomaly_boundary():
+    first = setup.task_plan(AGENT, scope_mode="everything", dashboard_scopes=[ROOT_MG])
+    anomaly, dashboard = first["tasks"]
+    assert "STRICT MANAGED-SCOPE PREAMBLE" in anomaly["agentPrompt"]
+    assert ROOT_MG not in anomaly["agentPrompt"]
+    assert ROOT_MG in dashboard["agentPrompt"]
+    existing = [dict(id="dashboard", name=dashboard["taskName"],
+                     cronExpression=dashboard["cronExpression"], agentPrompt=dashboard["agentPrompt"])]
+    repeat = setup.task_plan(AGENT, existing=existing)
+    assert repeat["dashboardPolicy"] == first["dashboardPolicy"]
+    assert repeat["tasks"][1]["action"] == "unchanged"
+    edited = setup.task_plan(AGENT, existing=existing, email="a@contoso.com")
+    assert edited["dashboardPolicy"] == first["dashboardPolicy"]
+    managed = setup.task_plan(AGENT, existing=existing, scope_mode="managed")
+    assert managed["dashboardPolicy"] == {"mode": "managed", "scopes": []}
+    existing[0]["agentPrompt"] = "policy missing"
+    with pytest.raises(setup.SetupError, match="ask for scope"):
+        setup.task_plan(AGENT, existing=existing)
+
+
+def test_everything_rejects_wrong_tenant_before_generating_grants():
+    other_root = f"/providers/Microsoft.Management/managementGroups/{SUB}"
+    with pytest.raises(setup.SetupError, match="root must match"):
+        setup.discover(agent_doc(), "MSI", "everything", [other_root])
+    with pytest.raises(setup.SetupError, match="does not match"):
+        setup.discover(agent_doc(), "MSI", "everything", [ROOT_MG], tenant_id=SUB)
+    doc = agent_doc()
+    del doc["identity"]["tenantId"]
+    with pytest.raises(setup.SetupError, match="tenant ID"):
+        setup.discover(doc, "MSIClient-" + CLIENT, "everything", [ROOT_MG])
+    discovery = setup.discover(doc, "MSIClient-" + CLIENT, "everything", [ROOT_MG], tenant_id=SUB2)
+    assert discovery["dashboardScopes"] == [ROOT_MG]
+
+
+def test_migration_retires_all_and_only_exact_legacy_tasks():
+    old_names = [task["defaultName"] for task in setup._load_manifest()[1]]
+    existing = [{"id": str(i), "name": name} for i, name in enumerate(old_names)]
+    existing.append({"id": "custom", "name": old_names[0] + " custom"})
+    plan = setup.task_plan(AGENT, existing=existing)
+    assert {task["taskName"] for task in plan["retire"]} == set(old_names)
+    assert "custom" not in {task["existingTaskId"] for task in plan["retire"]}

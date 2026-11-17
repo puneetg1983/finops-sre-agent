@@ -47,7 +47,7 @@ def test_render_gate_requires_escaping_csp_and_static_view():
     passed, measurement = runner._render_gate(render_report)
 
     assert passed is True
-    assert measurement["inline_script_count"] == 1
+    assert measurement["inline_script_count"] == 2  # Theme detection and the chart.
     assert all(measurement["checks"].values())
 
 

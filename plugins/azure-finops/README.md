@@ -1,107 +1,96 @@
 # azure-finops plugin
 
-Read-only Azure FinOps pack for Azure SRE Agent, packaged as a **standard plugin**. It contains
-skills and an `.mcp.json` that declares the Azure Resource Manager (ARM) MCP server, so it installs
-from the Plugin Marketplace with no external installer script.
+A read-only Azure SRE Agent plugin with 11 skills and **one consolidated FinOps dashboard**.
+Install from the Plugin Marketplace, configure the ARM MCP connector, then say
+**"Set up FinOps for me"**.
+
+## Mandatory scope choice and OBO permissions
+
+Setup asks whether the dashboard covers **Managed resources** or **Everything** and waits for
+an explicit answer. Managed mode follows the agent's live managedResources, preserving exact RG
+boundaries. Everything covers all resources in the agent's Azure tenant, including unmanaged ones,
+using the tenant root management group and fresh recursive subscription discovery.
+
+For Everything, setup explicitly explains and requests an **on-behalf-of (OBO)** permission prompt
+to assign the **agent's managed identity** the **Cost Management Reader** Azure RBAC role at tenant
+root. That role is inherited by existing and future subscriptions. It is a role, not an Entra group.
+Reader on the agent is also required. The agent never receives write or role-assignment privileges.
+The approving user needs grant rights at those scopes; otherwise setup provides an exact-scope
+script for an authorized administrator to review and run. Billing policy may also require EA
+AO-view-charges or MCA Azure-charges access.
+
+Only the dashboard uses Everything. Standalone skills, anomaly alerts and the optional subagent
+remain managed-resource-only. Setup does not modify managedResources. If the root hierarchy
+cannot be completely read, the dashboard fails closed rather than reporting only visible
+subscriptions as Everything. An Everything dashboard can run without managedResources; in that
+case setup does not create the managed-only anomaly task.
 
 ## ARM MCP connector
 
-Cost and budget data comes from the **Azure Resource Manager (ARM) MCP server** instead of direct
-Consumption UsageDetails calls, which throttle easily. The plugin's `.mcp.json` declares
-`https://mcp.management.azure.com` with the `x-mcp-toolset: CostManagement` header (needed for
-`list_budgets`, `get_budget`, and `forecast_costs`).
+`.mcp.json` declares `https://mcp.management.azure.com`, header `x-mcp-toolset: CostManagement`.
+Installing the plugin does not create/authenticate the connector.
 
-Installing the plugin doesn't create the connector:
+1. **Plugins > azure-finops > Connectors > Configure** on `azure-resource-manager`.
+2. Set **OAuth**, scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`.
+3. Sign in with an account that can read costs on the selected dashboard scopes.
+4. Select only read tools: `query_costs`, `forecast_costs`, `list_budgets`, `get_budget`,
+   `list_dimensions`, `list_alerts`, and supported optional read-only benefit/container tools.
+   Never select write tools such as `create_budget`, `create_deployment` or `execute_resource_action`.
 
-1. Open **Plugins → azure-finops**, scroll to **Connectors**, and select **Configure** on
-   `azure-resource-manager`. The URL and header are prefilled.
-2. Change authentication to **OAuth** and enter the scope
-   `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default` (the marketplace can't prefill OAuth settings).
-3. Sign in with an account that has **Cost Management Reader** on the managed scopes.
-4. Select only the read tools: `query_costs`, `forecast_costs`, `list_budgets`, `get_budget`,
-   `list_dimensions`, and `list_alerts`. Leave every write tool (`create_budget`,
-   `create_or_update_resource`, `create_deployment`, ...) unselected.
+Connector calls use that user's sign-in, including scheduled runs. OBO grants to the agent do not
+grant the connector user access. Missing/expired connector falls back to Consumption UsageDetails
+with a warning. Setup reports the two identities' access separately.
 
-ARM MCP calls run as the user who signed in to the connector, including scheduled runs. If the
-connector is missing or its sign-in expires, skills fall back to Consumption UsageDetails and say so in
-every report. `finops-setup` checks the connector and reports its state.
+Cost queries are sequential, limited to 5,000 rows and split on truncation. Lookback is 92 days;
+longer budget-proposal history uses UsageDetails. Tags are joined by resource ID because query_costs
+doesn't group by tags. Root management groups are expanded to subscriptions for cost queries.
 
-Known ARM MCP limits the skills handle: `query_costs` returns at most 5,000 rows and cannot page (a
-truncated result is split by date and re-queried), reaches back only 92 days (budget-amount
-derivation in `finops-budget-editor` therefore still uses UsageDetails), and cannot group by tag
-(allocation joins resource IDs to Resource Graph tags).
+## Dashboard sections
 
-## Setup: one sentence, at most one approval
+Overview; cost explorer; ownership/allocation; billing/adjustments; budgets/forecasts; anomalies;
+rightsizing/waste; commitments; containers; AI spend; unit economics; sustainability;
+planning/scenarios; governance/scorecards; cost/reliability; prioritized actions; data/scope coverage.
 
-1. Install **azure-finops** from the marketplace.
-2. In chat: **"Set up FinOps for me"**.
-3. If the agent's identity lacks cost access, approve the permission prompt. Choose *approve for this
-   thread*.
+The dashboard is a CSP-safe scheduled snapshot with local keyboard-accessible tabs, search,
+inline charts, light/dark themes and print/PDF. It never fetches Azure data in the viewer.
+Every source retains its own timestamp, period and ready/partial/unavailable/unsupported status.
+Missing optional data is not zero cost or a healthy score.
 
-The agent then does the rest itself:
+The core six analyzers are reused; optional benefit, AKS allocation, business volume, carbon/energy,
+scenario, billing-export and policy sources populate additional sections only when available.
+This is not feature parity with Cloudability or a multi-cloud ingestion product.
+See [research and capability gaps](../../docs/CLOUDABILITY-COVERAGE.md) and
+[normalized data contracts](skills/finops-report-renderer/DASHBOARD.md).
 
-| Step | What `finops-setup` does |
-|---|---|
-| Discover | Reads its own resource: managed scopes, and the identity its Azure tools run as |
-| Permissions | Lists that identity's role assignments. If any are missing, it grants **Reader** on the agent and **Cost Management Reader** on each cost scope **on behalf of the signed-in user (OBO)**. The agent's own identity never holds rights to grant roles |
-| Tasks | Creates or updates the 7 scheduled tasks in `review` mode (idempotent) |
-| Reports | Builds all 6 Live Reports immediately (a few minutes); the tasks refresh them on schedule after that |
-| Summary | Lists results and the opt-ins: email alerts, GitHub correlation, read-only subagent |
+## Scheduled tasks (UTC)
 
-The approving user needs the agent **Administrator** role plus **Owner** or **User Access
-Administrator** on the scopes. If they don't have that, the agent generates `finops-rbac.sh` for an
-Owner to run once in Azure Cloud Shell.
+| Task | Cron | Output |
+|---|---|---|
+| FinOps: Cost Anomaly Detection (Daily) | `0 14 * * *` | Managed-resource alert in task result, optional email |
+| FinOps: Dashboard (Live Report, Daily) | `30 14 * * *` | One **FinOps: Dashboard** report |
+
+Setup creates/updates tasks in review mode and builds the dashboard immediately.
+After the replacement report is successfully saved, setup retires the old individual-report
+schedules by exact name. It never deletes historical reports or custom schedules.
+Repair reuses the dashboard ID. Email/GitHub/schedule-only edits preserve the stored scope policy;
+a setup/repair run asks for the scope choice again.
+
+**Access warning:** local search and tabs are presentation, not security filters. Report viewers
+can inspect the entire saved snapshot, especially important for Everything. Use platform report
+access controls for the intended audience.
 
 ## Skills
 
 | Skill | Purpose |
 |---|---|
-| `finops-setup` | End-to-end setup and repair from chat |
-| `finops-managed-scope` | Scope guard: reads the agent's live `managedResources`; scheduled runs fail closed |
-| `finops-cost-anomaly-detection` | Daily spike detection with deployment, Activity Log and optional GitHub correlation |
-| `finops-rightsizing-advisor` | Advisor plus utilization-based rightsizing and idle-resource cleanup |
-| `finops-cost-allocation` | Showback by tag or resource group |
-| `finops-budget-governance` | Budget status, forecast and gaps |
-| `finops-budget-editor` | Advisory budget proposals; generates a script for a **human** to run |
-| `finops-cost-optimization-report` | Executive rollup |
-| `finops-for-ai` | Azure AI spend by resource, model and service family |
-| `finops-cost-vs-reliability` | Cost joined to alerts, Resource Health and Advisor high-availability recommendations |
-| `finops-report-renderer` | Deterministic, CSP-safe static Live Report HTML |
-
-## Scheduled tasks (UTC)
-
-| Task | Cron | Live Report |
-|---|---|---|
-| FinOps: Cost Anomaly Detection (Daily) | `0 14 * * *` | (result or email) |
-| FinOps: Cost Overview (Live Report, Daily) | `30 14 * * *` | FinOps: Cost Overview |
-| FinOps: Rightsizing Savings (Live Report, Weekly) | `0 15 * * 1` | FinOps: Rightsizing Savings |
-| FinOps: Budget Status (Live Report, Daily) | `0 16 * * *` | FinOps: Budget Status |
-| FinOps: Cost Optimization (Live Report, Weekly) | `0 17 * * 1` | FinOps: Cost Optimization |
-| FinOps: AI Spend (Live Report, Weekly) | `0 18 * * 1` | FinOps: AI Spend |
-| FinOps: Cost vs Reliability (Live Report, Weekly) | `0 19 * * 1` | FinOps: Cost vs Reliability |
-
-## Differences from the script-installed pack
-
-| Area | Script pack (`install-api.sh`) | This plugin |
-|---|---|---|
-| Install | Laptop script with `az`, `curl`, `python3` | Marketplace **Install** + one chat message |
-| RBAC | Script grants roles; the caller must be Owner | Same roles and scopes, granted in chat on behalf of the user |
-| Subagent | Created automatically; tasks target it | Optional, on request (one paste); tasks run on the main agent in `review` mode |
-| Model tier / task owner | Set per task | Not exposed by the chat task tools; platform defaults apply |
-
-## What the reports cover
-
-The same scope as the source pack: the agent's **managed resources**, read live on every run.
-Subscriptions and management groups are reported in full. Resource groups are reported as exactly those
-resource groups: ARM MCP queries each managed resource group directly (the UsageDetails fallback fetches
-the containing subscription and filters it to the managed resource groups). To report on a whole subscription, add the
-subscription under **Settings → Managed resources** and say "Set up FinOps for me" again. That grants
-Cost Management Reader on the new scope and rebuilds the reports.
-
-## Permissions summary
-
-Only read roles are granted: **Reader** on the agent resource, and **Cost Management Reader** on each
-managed subscription or management group. For resource-group boundaries the grant goes on the containing
-subscription, because that is where the UsageDetails fallback reads cost data. No write roles, and no
-budget-write permissions. The ARM MCP connector uses its signed-in user's own access, so that user also
-needs Cost Management Reader on the managed scopes.
+| `finops-setup` | Scope choice, OBO permissions, tasks, immediate dashboard, safe migration |
+| `finops-managed-scope` | Managed-resource guard plus isolated explicit dashboard-policy resolver |
+| `finops-cost-anomaly-detection` | Spikes with deployment/Activity Log and optional GitHub correlation |
+| `finops-rightsizing-advisor` | Advisor/utilization-backed rightsizing and waste |
+| `finops-cost-allocation` | Tag showback, unallocated spend and tag coverage |
+| `finops-budget-governance` | Native-period budgets, forecasts and gaps |
+| `finops-budget-editor` | Human-reviewed budget proposal scripts, never unattended writes |
+| `finops-cost-optimization-report` | Prioritized actions with distinct impact types |
+| `finops-for-ai` | AI cost/model/token attribution |
+| `finops-cost-vs-reliability` | Cost joined to health, alerts and availability recommendations |
+| `finops-report-renderer` | Deterministic consolidated dashboard and standalone adapters |

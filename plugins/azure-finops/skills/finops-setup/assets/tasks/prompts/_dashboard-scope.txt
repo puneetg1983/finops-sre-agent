@@ -1,0 +1,13 @@
+DASHBOARD SCOPE POLICY - complete before any analysis, ListReports/GetReport, or SaveReport.
+
+Agent resource ID: `{{AGENT_RESOURCE_ID}}`.
+DASHBOARD_POLICY_JSON: {{DASHBOARD_POLICY}}
+This policy was confirmed during setup. Persist verbatim; no override at runtime.
+
+Load `finops-managed-scope`, its SKILL.md, scope.py and sibling helpers. Dynamically GET the current agent resource and its managedResources. Call resolve_dashboard_scopes(current_managed_resources, policy, management_group_expansions=complete_descendants, tenant_id=current_agent_tenant_id).
+
+For managed mode, use only live managedResources. For everything mode, independently expand the configured tenant root management group recursively on EVERY run, including newly added subscriptions. Do not substitute az account list, the agent subscription, managedResources, or whatever subscriptions happen to be visible. Verify the configured root equals the current agent tenant ID. If this cannot be verified or the hierarchy cannot be fully read, fail closed without querying analysis data, sending email, or saving a report.
+
+Use the returned boundary as the explicit input to the pure query planners, cost row filters, and analysis helpers for THIS dashboard only. It is not an interactive confirmation, does not change managedResources, and does not authorize other scheduled tasks or skills to widen their scope. Do not invoke those skills' managed-scope discovery or their standalone SaveReport procedures; reuse only their pure analysis functions and retrieval contracts within this boundary.
+
+Apply independent scoped retrieval, complete pagination, overlap de-duplication, and exact UsageDetails transport filtering. Disclose included, excluded, unattributed, unsupported, partial and failed coverage. Broad RBAC never defines the boundary. Azure operations are read-only; only use the ARM MCP read tools documented in finops-managed-scope. Use its sequential queries, retries, split-truncation logic and disclosed fallback. Never call an Azure write tool.

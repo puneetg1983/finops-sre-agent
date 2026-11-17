@@ -1,91 +1,81 @@
-# Azure FinOps Plugin for SRE Agent: Design (1-pager)
+# Azure FinOps dashboard design
 
-**Author:** Puneet Gupta · **Status:** Draft for review · **Repo:** github.com/puneetg1983/finops-sre-agent
+A standard Azure SRE Agent plugin: 11 skills plus an ARM MCP server declaration. Plugin install
+alone does not provision tasks, reports, RBAC or subagents; the in-chat setup skill closes that gap.
 
-## What
-A standard Plugin Marketplace plugin (skills plus an ARM MCP server requirement in `.mcp.json`) that turns SRE Agent into a FinOps assistant. It covers
-cost anomalies, rightsizing, budgets, allocation, AI spend and cost vs. reliability, with 6 auto-refreshing
-Live Reports.
+**Experience:** Install > "Set up FinOps for me" > choose Managed resources / Everything >
+approve missing read-only OBO grants > open **FinOps: Dashboard**.
 
-**User experience:** Install → *"Set up FinOps for me"* → approve once (only if roles are missing) → done.
+## One report, not a report collection
 
-## What we ship: 11 skills
-| Skill | What it does | Scheduled output (UTC) |
+The daily **14:30 UTC** dashboard task renders 17 sections: overview, resource explorer,
+ownership/allocation, billing/adjustments, budgets/forecasts, anomalies, rightsizing/waste,
+commitments, containers, AI, unit economics, sustainability, planning, governance/scorecards,
+cost/reliability, prioritized actions and source/scope coverage.
+
+The report is a scheduled static snapshot with local accessible tabs, row search, inline SVG
+charts, print/PDF and a shared light/dark theme. It does not imitate Cloudability's interface.
+It has no external dashboard dependencies or view-time Azure calls; SaveReport uses `allowedTools: []`.
+Every section discloses source, timestamp, period and status. Missing inputs remain visible as
+unavailable, not healthy zeros. Different source periods (for example native monthly budgets) are
+preserved. Source timestamps are not overwritten on reuse.
+
+Existing deterministic analyzers feed the consolidated builder; they do not save their own reports
+during a dashboard run. Daily and resource-total cost pulls are shared but never combined into an
+overlapping financial total. Query shapes are planned and validated separately. Optional provider,
+billing, allocation and business-metric inputs use explicit numeric contracts, not LLM calculations.
+See [DASHBOARD.md](../plugins/azure-finops/skills/finops-report-renderer/DASHBOARD.md).
+
+## Explicit scope and least privilege
+
+Setup **must ask and wait** for the scope choice. It is not inferred from RBAC, previous chat or
+the set of subscriptions visible to a user.
+
+| Choice | Dashboard boundary | Read-only cost grant |
 |---|---|---|
-| `finops-setup` | One-sentence setup and repair: roles, tasks, reports | – |
-| `finops-managed-scope` | Guardrail used by every skill: limits analysis to the agent's managed resources | – |
-| `finops-cost-anomaly-detection` | Finds cost spikes and correlates them with deployments and config changes | Daily 14:00 (alert) |
-| `finops-cost-allocation` | Showback: attributes spend to owner tags (team, env, cost center…) and surfaces unowned spend | On demand |
-| `finops-budget-governance` | Each budget's spend and forecast vs. its amount and alert thresholds | **Budget Status** report, daily 16:00 |
-| `finops-budget-editor` | Proposes budget changes as a script for a human to run | On demand |
-| `finops-rightsizing-advisor` | Over-provisioned and idle resources, with estimated savings | **Rightsizing Savings** report, Mon 15:00 |
-| `finops-for-ai` | AI spend (Azure OpenAI, AI Foundry) by resource, model and service | **AI Spend** report, Mon 18:00 |
-| `finops-cost-vs-reliability` | Where spend doesn't buy reliability: cost joined with alerts and health | **Cost vs Reliability** report, Mon 19:00 |
-| `finops-cost-optimization-report` | Executive rollup: anomalies, rightsizing savings, budgets, policy findings | **Cost Optimization** report, Mon 17:00 |
-| `finops-report-renderer` | Renders every Live Report as safe static HTML, including **Cost Overview** (30-day spend, top services and RGs; daily 14:30) | – |
+| Managed resources | Agent managedResources, fetched live every run; exact RG boundaries retained | Cost Management Reader on managed subscriptions/MGs (containing subscription for UsageDetails transport) |
+| Everything | Agent tenant root MG, verified against the agent tenant, recursively expanded each run | Cost Management Reader on the root, inherited by existing and future subscriptions |
 
-All analysis is read-only. Every skill also works in chat, for example *"Why did cost spike yesterday?"*
+Both need Reader on the agent itself. All grants are explicit **OBO** Azure CLI write calls;
+the agent never gets role-assignment privileges. A reviewable exact-principal fallback script is
+provided when the user cannot grant roles. Root-wide access and the resulting report audience
+exposure must be explained before consent. EA/MCA charge-visibility policy can still block cost
+reads; setup does not bypass billing policy.
 
-## Problem
-> ⚠️ **Key constraint: the plugin framework can't deliver most of what FinOps needs.** Plugin install
-> provisions only **skills** and **MCP server** definitions. Everything else must be created after install.
+The dashboard task persists a validated policy in `DASHBOARD_POLICY_JSON`. Its isolated
+`resolve_dashboard_scopes` path reuses pure query planners and filters with the chosen boundary.
+Other skills, the optional subagent and the separate daily **14:00 UTC** anomaly alert retain
+their original strict managed-resource policy. No changes are made to managedResources.
+Missing or incomplete hierarchy discovery fails closed rather than shrinking "Everything" to
+visible subscriptions. Root MG grants are inherited, but cost queries run on descendant subscriptions.
 
-| FinOps needs | Delivered by plugin install? |
-|---|---|
-| Skills | ✅ Yes |
-| ARM MCP connector for cost data | ⚠️ Declared only; the user configures it (OAuth scope can't be prefilled) |
-| Scheduled tasks | ❌ No |
-| Live Reports | ❌ No |
-| Subagents | ❌ No (and no chat tool can create one) |
-| Azure RBAC roles for the agent identity | ❌ No |
+## Setup, repair and migration
 
-We also don't want users running scripts. So the gap has to be closed **inside the chat**, using only
-tools the agent already has.
+1. Ask scope, discover identity, list inherited assignments and generate only missing read roles.
+2. Obtain OBO approval for grants. Recheck identity access and hierarchy; never use a user's successful
+   read to pretend the managed identity has access.
+3. Check the separately authenticated ARM MCP connector. Its sign-in must cover the selected scopes;
+   granting the agent a role does not grant that user a role.
+4. Create/update the dashboard and anomaly tasks, explicitly enforcing review mode.
+5. Render and save one dashboard immediately, reuse its exact report ID and confirm the version.
+6. Only after a successful save, cancel the seven exact legacy task names in the manifest. Leave
+   old report snapshots intact. Failed migration retains old schedules and discloses pending status.
 
-## Design
-A `finops-setup` skill does all post-install work in chat. Its decisions come from a deterministic
-offline helper (`setup.py`); the LLM only runs the commands that helper prints.
+Scope changes cause task updates; opt-in-only edits preserve the persisted policy. Duplicate exact
+task/report names and malformed policies require explicit resolution, not silent selection.
 
-| Step | Agent does | User does |
-|---|---|---|
-| 1. Discover | Reads its managed resources and the identity its Azure tools run as | – |
-| 2. Permissions | Lists that identity's role assignments; grants only what's missing, **on behalf of the user (OBO)** | Approve once |
-| 3. Tasks | Creates or updates 7 scheduled tasks (idempotent, review mode) | – |
-| 4. Reports | Builds all 6 Live Reports immediately | – |
-| 5. Summary | Status + opt-ins (email alerts, GitHub correlation, read-only subagent) | – |
+## Retrieval and capability boundaries
 
-No questions by default. Re-running the same sentence repairs or updates setup.
+ARM MCP `query_costs` is primary: explicit scopes/dates/USD, sequential requests, at most 5,000 rows,
+date splitting for truncation and 92-day lookback. Missing/expired connector falls back to paginated
+Consumption UsageDetails with an explicit warning. RG transport reads do not widen logical scope.
+Budget-amount proposals still use longer UsageDetails history.
 
-### Cost data: ARM MCP
-Direct Consumption UsageDetails pulls throttle easily, so every cost read goes through the ARM MCP
-server's read-only tools (`query_costs`, `list_budgets`). A shared offline adapter
-(`finops-managed-scope/cost_query.py`) plans one query per managed scope, pins USD and explicit dates,
-splits results truncated at 5,000 rows, rejects gaps/overlaps/out-of-scope queries, and flattens rows
-into the shape the existing analysis helpers use. Setup checks the connector; if it is missing or its
-sign-in expired, skills fall back to UsageDetails with a warning on every report. Budget-amount
-derivation stays on UsageDetails because `query_costs` only reaches back 92 days.
+Optional telemetry, benefit, container, carbon, business-volume and billing-export APIs require their
+own existing access/configuration. Scheduled runs do not grant roles, deploy collectors or buy
+commitments. Azure writes, budget edits and remediation are not dashboard operations.
 
-## Security
-- **Least privilege:** only *Reader* (agent resource) and *Cost Management Reader* (cost scopes). The agent identity can never grant roles; the **user** grants them via OBO.
-- **Approver** needs agent Administrator plus Owner or User Access Administrator. Otherwise the agent hands over a Cloud Shell script for an Owner.
-- **Unattended runs are read-only:** tasks run in review mode, so no write can happen without a human. Only ARM MCP read tools are selected or assigned; its write tools are never called.
-- **ARM MCP identity:** connector calls run as the user who signed in to the connector, bounded by that user's RBAC; managed-scope filtering still applies.
-- **Scope:** reports cover only the agent's **managed resources**, read live on every run, and fail closed. A resource-group scope reports only that resource group.
-
-## Alternatives rejected
-| Option | Why not |
-|---|---|
-| Installer script | Not a standard plugin; needs local tools |
-| Give the agent permission to grant roles | Violates least privilege |
-| Build reports only on schedule | Up to a week before first value |
-
-## Limitations → platform asks
-1. Subagents can't be created from chat → optional one-paste step. *Ask:* subagents and tasks in `plugin.json`.
-2. One approval is always needed for roles. *Ask:* plugin-declared roles, granted at Install.
-3. The chat task tool can't target a subagent or set model tier. *Ask:* add both.
-4. The marketplace can't prefill an OAuth scope for a plugin MCP server, and URL installs don't show its **Configure** button. *Ask:* accept OAuth settings in `.mcp.json` and show connector setup for every install.
-
-## Status
-Built and unit-tested (setup tests 26/26 pass; eval harness passes; OBO role grants are live fleet-wide).
-**Next:** live end-to-end run on a test agent → team review → PR to `Azure/sre-agent-plugins`.
-**Open:** overlap with the existing `finops_intelligence` skill (merge or narrow?).
+Cloudability informs reporting breadth, not a parity claim: non-Azure ingestion, proprietary
+benchmarks, historical mapping rules, automated cost sharing, custom commercial billing, editable
+widget canvases and automated optimization are not implemented. See the cited
+[research and coverage matrix](CLOUDABILITY-COVERAGE.md).

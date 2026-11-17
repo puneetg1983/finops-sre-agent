@@ -2,6 +2,7 @@
 
 import html
 import json
+import math
 from pathlib import Path
 
 
@@ -19,6 +20,59 @@ _CHART_JS = (
 )
 
 _TONES = {"neutral", "good", "warning", "critical"}
+_THEME = """
+<script nonce="{REPORT_NONCE}">
+(() => {
+  const param = new URLSearchParams(window.location.search).get("scoutTheme");
+  const theme = ["light", "dark"].includes(param) ? param :
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", theme);
+})();
+</script>"""
+
+_DASHBOARD_SCRIPT = """
+<script nonce="{REPORT_NONCE}">
+(() => {
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+  const search = document.getElementById('table-search');
+  const count = document.getElementById('search-count');
+  function filter() {
+    const term = search.value.toLocaleLowerCase().trim();
+    let matches = 0;
+    const panel = panels.find(p => !p.hidden);
+    for (const row of panel.querySelectorAll('tbody tr')) {
+      row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
+      if (!row.hidden) matches++;
+    }
+    count.textContent = term ? matches + ' matching rows in this section' : '';
+  }
+  function select(index, focus) {
+    tabs.forEach((tab, i) => {
+      const active = i === index;
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      panels[i].hidden = !active;
+    });
+    if (focus) tabs[index].focus();
+    filter();
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => select(index, false));
+    tab.addEventListener('keydown', event => {
+      let next;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = tabs.length - 1;
+      if (next !== undefined) { event.preventDefault(); select(next, true); }
+    });
+  });
+  search.addEventListener('input', filter);
+  document.getElementById('print-report').addEventListener('click', () => window.print());
+  select(0, false);
+})();
+</script>"""
 
 
 def _escape(value):
@@ -139,8 +193,8 @@ if (chartCanvas && window.Chart) {{
       datasets: [{{
         label: chartData.label,
         data: chartData.values,
-        borderColor: '#2563eb',
-        backgroundColor: 'rgba(37, 99, 235, 0.18)',
+        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--cp-accent').trim(),
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--cp-accent-soft').trim(),
         borderWidth: 2,
         tension: 0.25
       }}]
@@ -150,6 +204,91 @@ if (chartCanvas && window.Chart) {{
 }}
 </script>"""
     return markup, script
+
+
+def _dashboard_chart(model):
+    chart = model.get("chart")
+    if chart is None:
+        return ""
+    labels = _list(chart.get("labels"), "chart.labels")
+    values = _list(chart.get("values"), "chart.values")
+    if len(labels) != len(values):
+        raise ValueError("chart labels and values must have equal length")
+    if not values:
+        return ""
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in values):
+        raise ValueError("chart values must be finite numbers")
+    chart_type = chart.get("type", "bar")
+    if chart_type not in {"line", "bar", "doughnut"}:
+        raise ValueError("invalid dashboard chart type")
+    low, high = min(min(values), 0), max(max(values), 0)
+    span = high - low or 1
+    if not math.isfinite(span):
+        raise ValueError("chart range must be finite")
+    if chart_type == "line":
+        points = " ".join(
+            f"{8 + index * 784 / max(1, len(values) - 1):.2f},{152 - (value - low) / span * 144:.2f}"
+            for index, value in enumerate(values)
+        )
+        shapes = (f'<polyline points="{points}" fill="none" stroke="currentColor" '
+                  'stroke-width="3" vector-effect="non-scaling-stroke"/>')
+    else:
+        zero = 152 - (0 - low) / span * 144
+        step = 784 / len(values)
+        shapes = "".join(
+            f'<rect x="{8 + index * step:.2f}" y="{min(zero, 152 - (value - low) / span * 144):.2f}" '
+            f'width="{step * .7:.2f}" height="{abs(value / span * 144):.2f}" fill="currentColor"/>'
+            for index, value in enumerate(values)
+        )
+    label = _escape(chart.get("label") or "Cost trend")
+    table = _sections({"sections": [{
+        "title": str(chart.get("label") or "Cost trend"), "columns": ["Label", "Value"],
+        "rows": [[label, str(value)] for label, value in zip(labels, values)],
+    }]})
+    return (
+        f'<figure><svg role="img" aria-label="{label}" viewBox="0 0 800 160" preserveAspectRatio="none">'
+        f'<title>{label}</title>{shapes}</svg></figure>'
+        f'<details><summary>Chart data</summary>{table}</details>'
+    )
+
+
+def _dashboard(model):
+    tabs = _list(model.get("tabs"), "tabs")
+    if not tabs:
+        raise ValueError("dashboard tabs must not be empty")
+    buttons, panels, seen = [], [], set()
+    for index, tab in enumerate(tabs):
+        key = _required_text(tab, "id")
+        if not key.isascii() or not all(c.isalnum() or c == "-" for c in key) or key in seen:
+            raise ValueError("dashboard tab IDs must be unique ASCII identifiers")
+        seen.add(key)
+        title, status = _required_text(tab, "title"), _required_text(tab, "status")
+        if status not in {"ready", "partial", "unavailable", "unsupported"}:
+            raise ValueError("invalid dashboard tab status")
+        buttons.append(
+            f'<button type="button" role="tab" id="tab-{key}" aria-controls="panel-{key}" '
+            f'aria-selected="{str(index == 0).lower()}"><span>{_escape(title)}</span>'
+            f'<span class="status {status}">{status}</span></button>'
+        )
+        panel_warnings = str(tab.get("reason") or "")
+        panels.append(
+            f'<div role="tabpanel" tabindex="0" id="panel-{key}" aria-labelledby="tab-{key}">'
+            f'<section><h2>{_escape(title)}</h2><p>{_escape(tab.get("description"))}</p>'
+            f'<p class="provenance">{_escape(status)} | Source: {_escape(tab.get("source"))} | '
+            f'As of: {_escape(tab.get("refreshedAt") or "Unknown")} | {_escape(tab.get("period"))}</p>'
+            + (f'<aside class="warnings">{_escape(panel_warnings)}</aside>' if panel_warnings else "")
+            + '</section>' + (_metrics(tab) if tab.get("metrics") else "")
+            + _dashboard_chart(tab) + _sections(tab) + '</div>'
+        )
+    return (
+        '<div class="toolbar"><label for="table-search">Search table rows</label>'
+        '<input id="table-search" type="search" placeholder="Resource, team, service, region..." '
+        'aria-describedby="search-count"><span id="search-count" role="status"></span>'
+        '<button type="button" id="print-report">Print / save PDF</button></div>'
+        '<div class="dashboard-layout"><nav role="tablist" aria-label="FinOps sections" '
+        'aria-orientation="vertical">' + "".join(buttons) + '</nav><div>'
+        + "".join(panels) + '</div></div>'
+    )
 
 
 def render_report(model):
@@ -163,62 +302,64 @@ def render_report(model):
     scopes = [str(item) for item in _list(model.get("scopeSummary"), "scopeSummary")]
     warnings = [str(item) for item in _list(model.get("warnings"), "warnings")]
     partial = bool(model.get("partial"))
+    is_dashboard = "tabs" in model
 
     warning_items = list(warnings)
     if partial and not warning_items:
         warning_items.append("Partial data: one or more source pulls were incomplete.")
     warning_html = ""
     if warning_items:
-        warning_html = '<aside class="warnings"><strong>Data quality</strong><ul>' + "".join(
+        notices = "".join(
             f"<li>{_escape(item)}</li>" for item in warning_items
-        ) + "</ul></aside>"
+        )
+        if is_dashboard:
+            warning_html = (
+                f'<aside class="warnings"><details><summary>Data quality: {len(warning_items)} '
+                f'notices - review before acting</summary><ul>{notices}</ul></details></aside>'
+            )
+        else:
+            warning_html = '<aside class="warnings"><strong>Data quality</strong><ul>' + notices + "</ul></aside>"
 
     scope_html = (
         "<ul>" + "".join(f"<li><code>{_escape(scope)}</code></li>" for scope in scopes) + "</ul>"
         if scopes
         else '<p class="empty">No managed scope summary was supplied.</p>'
     )
-    chart_markup, chart_script = _chart(model)
+    chart_markup, chart_script = ("", "") if is_dashboard else _chart(model)
+    content = _dashboard(model) if is_dashboard else (
+        _metrics(model) + chart_markup + _sections(model)
+    )
+    stylesheet = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
+    mode = "Everything (tenant)" if model.get("scopeMode") == "everything" else "Managed resources"
+    csp = (
+        "default-src 'none'; script-src 'nonce-{REPORT_NONCE}'; "
+        "style-src 'nonce-{REPORT_NONCE}'; img-src data:; connect-src 'none'; "
+        "base-uri 'none'; form-action 'none';"
+        if is_dashboard else _CSP
+    )
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="{_CSP}">
+<meta http-equiv="Content-Security-Policy" content="{csp}">
 <title>{_escape(title)}</title>
+{_THEME}
 <style nonce="{{REPORT_NONCE}}">
-:root {{ color-scheme: light; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#172033; background:#f5f7fb; }}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; padding:24px; }}
-main {{ max-width:1200px; margin:0 auto; }}
-header,section,.metric,.warnings {{ background:#fff; border:1px solid #dce3ef; border-radius:12px; box-shadow:0 2px 8px rgba(15,23,42,.05); }}
-header,section {{ padding:20px; margin-bottom:16px; }}
-h1,h2,p {{ margin-top:0; }}
-.subtitle,.section-description,.refreshed {{ color:#596780; }}
-.metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:16px; }}
-.metric {{ padding:16px; border-top:4px solid #94a3b8; }}
-.metric.good {{ border-top-color:#16a34a; }} .metric.warning {{ border-top-color:#d97706; }} .metric.critical {{ border-top-color:#dc2626; }}
-.metric-label,.metric-detail {{ color:#596780; font-size:.88rem; }} .metric-value {{ font-size:1.65rem; font-weight:700; margin:6px 0; }}
-.warnings {{ padding:16px; margin-bottom:16px; border-color:#f59e0b; background:#fffbeb; }}
-.warnings ul {{ margin-bottom:0; }}
-.table-wrap {{ overflow-x:auto; }} table {{ width:100%; border-collapse:collapse; }}
-th,td {{ padding:10px; text-align:left; border-bottom:1px solid #e5eaf2; }} th {{ color:#44516a; font-size:.84rem; text-transform:uppercase; }}
-.chart-wrap {{ height:320px; }} .empty {{ color:#718096; font-style:italic; }}
-code {{ overflow-wrap:anywhere; }}
+{stylesheet}
 </style>
 {_CHART_JS if chart_script else ""}
 </head>
 <body>
 <main>
-<header><h1>{_escape(title)}</h1><p class="subtitle">{_escape(description)}</p><p class="refreshed">Last refreshed: {_escape(refreshed_at)}</p></header>
+<header><p class="eyebrow">Azure FinOps / Decision workspace</p><h1>{_escape(title)}</h1><p class="subtitle">{_escape(description)}</p><p class="refreshed">Last refreshed: {_escape(refreshed_at)} | Scope: {_escape(mode)} | Scheduled snapshot, not real-time billing</p></header>
 {warning_html}
-{_metrics(model)}
-{chart_markup}
-<section><h2>Managed scope</h2>{scope_html}</section>
-{_sections(model)}
+<details class="scope-details"><summary>Report scope: {_escape(mode)}</summary>{scope_html}</details>
+{content}
 </main>
 {chart_script}
+{_DASHBOARD_SCRIPT if is_dashboard else ""}
 </body>
 </html>
 """

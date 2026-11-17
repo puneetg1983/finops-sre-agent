@@ -16,7 +16,10 @@ def _task_templates():
     manifest = json.loads((TASKS / "task-manifest.json").read_text())
     scope = (TASKS / "prompts" / "_managed-scope.txt").read_text()
     return {
-        task["id"]: scope + "\n\n" + (TASKS / task["prompt"]).read_text()
+        task["id"]: (
+            (TASKS / "prompts" / "_dashboard-scope.txt").read_text()
+            if task["id"] == "dashboard-report" else scope
+        ) + "\n\n" + (TASKS / task["prompt"]).read_text()
         for task in manifest["tasks"]
     }
 
@@ -176,7 +179,7 @@ def test_usage_details_skills_delegate_page_assembly_to_code():
 
 def test_scheduled_templates_have_strict_dynamic_scope_preamble():
     templates = _task_templates()
-    assert len(templates) == 7
+    assert len(templates) == 2
 
     for text in templates.values():
         lowered = text.lower()
@@ -244,7 +247,7 @@ def test_budget_skills_preserve_direct_management_group_budget_queries():
 
 
 def test_budget_status_task_queries_configured_management_groups_once():
-    text = _task_templates()["budget-status-report"]
+    text = _task_templates()["dashboard-report"]
     lowered = text.lower()
 
     assert "{{AGENT_RESOURCE_ID}}" in text
@@ -303,12 +306,7 @@ def test_rg_only_arg_and_advisor_policy_is_concrete():
         assert "client-side" in lowered, path
 
     templates = _task_templates()
-    delegated_tasks = [
-        "rightsizing-savings-report",
-        "ai-spend-report",
-        "cost-vs-reliability-report",
-        "cost-optimization-report",
-    ]
+    delegated_tasks = ["dashboard-report"]
     for path in delegated_tasks:
         lowered = templates[path].lower()
         assert "skill.md" in lowered, path

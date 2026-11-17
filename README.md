@@ -18,10 +18,20 @@ replaced by the in-chat `finops-setup` skill.
 3. On the plugin page, under **Connectors**, select **Configure** for `azure-resource-manager`; choose
    **OAuth** with scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`, sign in, and select only
    its read tools. See [plugins/azure-finops/README.md](plugins/azure-finops/README.md#arm-mcp-connector).
-4. In chat: **"Set up FinOps for me"**. Approve the permission prompt if one appears.
+4. In chat: **"Set up FinOps for me"**. Choose **Managed resources** or **Everything** when asked,
+   then approve any required OBO permission prompt.
 
-The agent grants its own read-only cost roles on your behalf, creates the seven scheduled tasks, and
-builds all six Live Reports right away. Say the same sentence again at any time to repair or update the setup.
+The agent grants missing read-only cost roles on your behalf and builds **one consolidated FinOps
+dashboard** with 17 sections, local search, charts and print/PDF. One task refreshes it daily; a
+separate managed-resource anomaly task handles alerts. Everything means all resources in the agent's
+Azure tenant, discovered from its root management group, including unmanaged resources. It requires
+Cost Management Reader at that root, approved via OBO. Other skills remain managed-resource-only.
+
+Optional inputs (such as namespace allocation, business volumes, carbon data and billing exports)
+show explicit unavailable/partial states until connected, never made-up metrics.
+See the [Cloudability reporting research and coverage matrix](docs/CLOUDABILITY-COVERAGE.md).
+Say the setup sentence again to repair or update; old schedules are retired only after the new
+dashboard saves successfully. Historical reports are not deleted.
 
 Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md) · Design: [docs/DESIGN.md](docs/DESIGN.md).
 

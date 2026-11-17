@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "azure-finops",
-      "description": "Read-only Azure FinOps pack: cost anomalies, rightsizing, allocation, budgets, AI spend, cost vs reliability and executive Live Reports. Say \"Set up FinOps for me\" and the agent grants its read-only cost roles on your behalf, then creates the scheduled reports. Budget planning only produces a script for a human to review and run.",
+      "description": "Read-only Azure FinOps with one consolidated, daily-refreshed dashboard. Setup requires a Managed resources or Everything scope choice and grants missing read-only cost roles on your behalf (OBO). Includes managed-resource anomaly alerts and explicit coverage gaps for optional reporting inputs. Budget changes remain human-reviewed scripts.",
       "source": "./plugins/azure-finops"
     }
   ]

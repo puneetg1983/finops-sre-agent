@@ -1,0 +1,40 @@
+Build and SAVE exactly one static snapshot Live Report named `{{REPORT_NAME}}`. Do not create the former six reports. Do not ask runtime questions.
+
+1. Follow the dashboard scope preamble first. Call ListReports; reuse the exact-name dashboard's reportId via GetReport. If duplicate exact names exist, stop and disclose the conflict instead of choosing one.
+
+2. Read finops-report-renderer SKILL.md and DASHBOARD.md, exact dashboard.py, models.py, render.py and theme.css. Keep these files together. Use the existing pure analysis modules from the other FinOps skills, not their standalone report-saving workflows. Everything mode is a dashboard-only policy, not permission to change any other skill's managed-resource policy.
+
+3. Capture now = datetime.now(timezone.utc), with a default inclusive 30-day UTC window (today minus 29 days through today). Resolve the scope boundary once; use that same boundary for every cost, budget, inventory, utilization, health and enrichment input. Cost ingestion is delayed and today's rows may be incomplete.
+
+4. Retrieve shared cost data through finops-managed-scope section 4. Use plan_cost_queries, sequential ARM MCP *_query_costs, split_cost_query for truncation, and prepare_cost_query independently per query shape. Reuse prepared rows, never query the same shape twice:
+   - Daily ResourceGroupName,ServiceName for the overview and anomaly analysis.
+   - Totals ResourceId,ServiceName,ResourceLocation,ChargeType for resource explorer, allocation, rightsizing, AI and reliability joins. Preserve subscription and RG attribution and unknown resource charges.
+   - Don't combine overlapping query shapes into one financial total. Do not infer amortized or invoice cost from PreTaxCostUSD. If the connector is unavailable, follow the disclosed UsageDetails fallback with complete pagination and exact client-side filtering. Retry transient errors before reporting partial data.
+
+5. Populate core source envelopes in sandbox Python using deterministic functions:
+   - overview: summarize_cost_overview on the prepared daily query.
+   - explorer: build_explorer_rows(prepared_resource_costs["included_rows"]).
+   - anomalies: detect_anomalies(daily_rows), with its default partial-day exclusion.
+   - allocation: aggregate cost by normalized resource ID in Python, join scoped Resource Graph tags, then allocate_costs. Retain every unallocated and untagged charge; current tags are not historical rules. If tags cannot be read, mark partial, not fully unowned.
+   - budgets: use the full read-only retrieval/normalization and evaluate_budgets contract in finops-budget-governance SKILL.md for every directly configured management-group budget scope and every expanded effective scope; query each target exactly once, case-insensitive. Never replace management-group budgets with descendant budgets. Preserve budget currency and native budget periods.
+   - rightsizing: use finops-rightsizing-advisor's scoped Advisor/metrics retrieval contract and recommend_rightsizing; missing utilization is unvalidated, not a confirmed saving.
+   - ai: attribute_ai_costs with its scoped resource/model/token enrichment; don't invent token counts or prices.
+   - reliability: analyze_cost_vs_reliability with its scoped alerts, Resource Health and Advisor data.
+   - optimization: summarize_optimization from these same scope-filtered results, with impact_type retained. Do not sum savings, budget overruns, anomaly spikes or governance exposure.
+   Read the corresponding SKILL.md for helper signatures and read-only retrieval/validation details. Resource Graph, Advisor and telemetry reads must be explicitly subscription-scoped, RG-constrained where applicable and client-side checked. Reuse retrievals across modules. Failed sources must never be passed as successful empty inputs.
+
+6. Attempt each additional source only if a suitable read tool and permissions already exist. Never grant more roles or enable services during a scheduled run:
+   - commitments: read benefit utilization, reservation/savings-plan recommendations and transactions using the documented read-only ARM MCP tools. Normalize matching-unit utilization, eligible/covered cost, realized savings, unused commitment cost, expiry and recommendation. Keep portfolio billing scope distinct; if the API can only return outside-boundary data, mark unsupported.
+   - containers: use existing AKS cost allocation / OpenCost data for cluster, namespace, workload, idle/shared cost and allocation method. A cluster's resource bill is not namespace allocation. No add-on installation or cluster writes.
+   - unit-economics: only use configured business volume telemetry and approved allocation outputs with exactly matching numerator/denominator periods and scopes. Missing or zero volumes must not become a zero unit cost.
+   - sustainability: only sourced Azure carbon/energy measurements or a documented supplied model. If only carbon is available, mark unavailable with that limitation rather than invent kWh.
+   - planning: only supplied workload inputs / pricing quotes, explicit scenario assumptions, term and breakeven. Do not invent demand, negotiated rates or purchase recommendations.
+   - governance: normalized scoped policy findings, tag/ownership coverage, savings adoption and scorecards with explicit owners and sourced targets. No fabricated industry benchmarks or automated ticket creation.
+   - billing: existing scoped cost/billing exports or approved chargeback outputs with cost basis, currency, billing period, credits, discounts, amortization and documented rate/allocation rules. No billing-account-wide retrieval that exceeds the dashboard boundary and no currency conversion without a sourced FX rate. This is not a custom billing or invoice issuance engine.
+   If a source is absent, denied, unsupported or incomplete, retain its tab with a precise reason and remediation. Read the normalized field contracts in DASHBOARD.md; normalize raw provider data in Python, never calculate report values in model prose. Describe business mapping, shared-cost rules, commercial billing, non-Azure providers and external benchmarks honestly in Data & scope, not as implemented capabilities.
+
+7. Build source envelopes for every collected tab. Each has status, source, refreshed_at, window, scope_summary, data and reason for partial/unavailable/unsupported. Pass precise source timestamps/periods, failure reasons, partial scope coverage and warnings. Omit an unavailable source's data; never substitute [] or zero totals to imply success. Use all effective scopes as scope_summary, marking incomplete pulls partial. Older source snapshots retain their actual timestamp; do not label them fresh.
+
+8. Call build_dashboard_model(sources, refreshed_at=now.isoformat(), scope_summary=effective_scopes, scope_mode=<persisted mode>, window=[start,end], scope_coverage=coverage, warnings=warnings). Run write_report(model, "finops-dashboard.html"). Do not author or rewrite the HTML. All 17 sections must remain visible in navigation, even unavailable ones.
+
+9. SaveReport the generated file with allowedTools: [], name `{{REPORT_NAME}}`, and the reused reportId if present. No view-time fetching, Azure writes, other report saves or old report deletions. Confirm report ID/version and list partial/unavailable source names in the task result. The existing independent cost-anomaly task handles notifications; this task must not send duplicate anomaly emails.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from decimal import Decimal, InvalidOperation
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -120,6 +121,42 @@ def canonicalize_resource_id(resource_id):
     for position in provider_markers:
         canonical[position] = "providers"
     return "/" + "/".join(canonical)
+
+
+def resolve_dashboard_scopes(managed_resources, policy, management_group_expansions=None,
+                             *, tenant_id=None):
+    """Resolve a setup-confirmed dashboard boundary without weakening skill policy."""
+    if not isinstance(policy, dict) or set(policy) != {"mode", "scopes"}:
+        raise ValueError("dashboard policy requires mode and scopes")
+    mode, roots = policy["mode"], policy["scopes"]
+    if mode == "managed":
+        if roots != []:
+            raise ValueError("managed dashboard must use live managedResources")
+        boundary = managed_resources
+    elif mode == "everything":
+        if not isinstance(roots, list) or len(roots) != 1:
+            raise ValueError("Everything requires one confirmed tenant root management group")
+        root = canonicalize_scope(roots[0])
+        if scope_kind(root) != "management_group":
+            raise ValueError("Everything requires a tenant root management group")
+        try:
+            root_tenant = uuid.UUID(root.rsplit("/", 1)[-1])
+            current_tenant = uuid.UUID(str(tenant_id))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("tenant root management group ID must be a GUID") from exc
+        if root_tenant != current_tenant:
+            raise ValueError("dashboard root must match the current agent tenant ID")
+        boundary = [root]
+    else:
+        raise ValueError("invalid dashboard scope mode")
+    resolved = resolve_managed_scopes(
+        boundary, management_group_expansions=management_group_expansions
+    )
+    if resolved["unexpanded_management_groups"]:
+        raise ValueError("dashboard management-group hierarchy is incomplete")
+    if not resolved["effective_scopes"]:
+        raise ValueError("dashboard has no effective scopes")
+    return resolved
 
 
 def _subscription_from_id(value):
