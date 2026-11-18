@@ -1,10 +1,17 @@
 # Consolidated dashboard contract
 
 The setup task saves **FinOps: Dashboard**, one daily-refreshed Live Report with 17 sections.
-Keep `dashboard.py`, `models.py`, `render.py` and `theme.css` together. There are no third-party
-scripts, fonts, network calls or view-time Azure tools in dashboard HTML. CSP nonces are substituted
-by SaveReport. Without JavaScript, all sections remain readable; with it, tabs support keyboard
-navigation, table search and print/PDF (which prints all sections).
+Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, and `fluent-icons.svg`
+together. There are no third-party scripts, fonts, network calls or view-time Azure tools in
+dashboard HTML. CSP nonces are substituted by SaveReport. Without JavaScript, all sections remain
+readable; with it, tabs support keyboard navigation, the mobile section selector, table search and
+print/PDF (which prints all sections).
+
+The inline [Microsoft Fluent System Icons](https://github.com/microsoft/fluentui-system-icons)
+are MIT-licensed; their notice and source revision are included in `fluent-icons.svg` and the
+generated report. Cloud, money calculator, and agents symbols describe the Azure, cost, and SRE Agent contexts;
+they are not product logos. Microsoft's [Azure product artwork](https://learn.microsoft.com/en-us/azure/architecture/icons/)
+has separate usage restrictions.
 
 ```python
 from dashboard import build_dashboard_model, build_explorer_rows

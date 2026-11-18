@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,42 @@ def test_categorical_charts_are_not_presented_as_time_trends():
     assert 'height="-' not in rendered
     chart["type"] = "line"
     assert "<polyline" in renderer._dashboard_chart({"chart": chart})
+
+
+def test_dashboard_icons_and_mobile_section_selector_are_self_contained():
+    output = renderer.render_report(build())
+    symbols = set(re.findall(r'<symbol id="([^"]+)"', output))
+    uses = re.findall(r'<use href="#([^"]+)"', output)
+    assert len(symbols) >= 17
+    assert set(uses) <= symbols
+    assert {"fluent-cloud", "fluent-money-calculator", "fluent-agents"} <= set(uses)
+    assert "Copyright (c) 2020 Microsoft Corporation" in output
+    assert '<label for="section-select">Report section</label>' in output
+    assert output.count("<option ") == 17
+    assert "Overview - Unavailable" in output
+    assert 'class="dashboard"' in output
+    assert '<script src=' not in output
+
+
+def test_single_point_chart_shows_a_label_and_a_visible_point():
+    chart = {"label": "Daily cost (USD)", "type": "line",
+             "labels": ["2026-11-16"], "values": [42.5]}
+    rendered = renderer._dashboard_chart({"chart": chart})
+    assert '<h3>Daily cost (USD)</h3>' in rendered
+    assert '<circle cx="400.00"' in rendered
+    assert "2026-11-16" in rendered
+    assert "View chart data" in rendered
+
+
+def test_wide_dashboard_tables_have_accessible_scroll_regions():
+    model = build({"anomalies": envelope([
+        {"dimension": "Service", "value": "Compute", "current_usd": 12,
+         "baseline_mean_usd": 5, "kind": "Increase"},
+    ])})
+    output = renderer.render_report(model)
+    assert 'role="region" tabindex="0" aria-label="Detected anomalies table"' in output
+    assert "Scroll horizontally to view more columns." in output
+    assert '<th scope="col">Dimension</th>' in output
 
 
 def test_managed_dashboard_uses_live_changes_and_rejects_any_fixed_override():

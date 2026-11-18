@@ -7,8 +7,9 @@ description: Renders the consolidated FinOps dashboard with 17 sections, keyboar
 
 **Scheduled default:** build the single **FinOps: Dashboard**, not six independent reports.
 Follow [DASHBOARD.md](DASHBOARD.md), call `build_dashboard_model` in `dashboard.py`, then
-`write_report` in `render.py`. Keep `dashboard.py`, `models.py`, `render.py`, and `theme.css`
-together. Dashboard charts are inline SVG, with no external scripts or network dependencies.
+`write_report` in `render.py`. Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`,
+`dashboard.css`, and `fluent-icons.svg` together. Dashboard charts and licensed Microsoft Fluent
+system icons are inline SVG, with no external scripts or network dependencies.
 Source gaps retain their own visible tab and reason. Never replace a failed analysis with a
 healthy zero. All report types use the shared light/dark theme.
 
