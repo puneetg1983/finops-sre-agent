@@ -138,6 +138,67 @@ def test_date_slices_are_summed_not_deduplicated():
     assert prepared["included_cost"] == Decimal("10")
 
 
+def test_daily_query_shapes_produce_scoped_90_day_history_and_30_day_baseline():
+    renderer_dir = SKILL.parent / "finops-report-renderer"
+    spec = importlib.util.spec_from_file_location("history_dashboard", renderer_dir / "dashboard.py")
+    dashboard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dashboard)
+    start, end = "2026-08-19", "2026-11-16"
+    default_window = ["2026-10-18", end]
+    scoped_resource = f"{RG}/providers/Microsoft.Web/sites/app"
+    outside_resource = "/subscriptions/sub/resourceGroups/elsewhere/providers/Microsoft.Web/sites/other"
+    overview_args = cost_query.plan_cost_queries(
+        [RG], start=start, end=end, granularity="Daily",
+        group_by=["ResourceGroupName", "ServiceName"], as_of=end,
+    )[0]
+    explorer_args = cost_query.plan_cost_queries(
+        [RG], start=start, end=end, granularity="Daily",
+        group_by=["ResourceId", "ServiceName", "ResourceLocation", "ChargeType"], as_of=end,
+    )[0]
+    overview = cost_query.prepare_cost_query([{
+        "arguments": overview_args,
+        "result": _result(["PreTaxCostUSD", "UsageDate", "ResourceGroupName", "ServiceName", "Currency"], [
+            [10.75, 20260819, "managed", "App Service", "USD"],
+            [2.25, 20261018, "managed", "App Service", "USD"],
+            [3.75, 20261116, "managed", "App Service", "USD"],
+        ]),
+    }], [RG], window=[start, end])
+    explorer = cost_query.prepare_cost_query([{
+        "arguments": explorer_args,
+        "result": _result(
+            ["PreTaxCostUSD", "UsageDate", "ResourceId", "ServiceName", "ResourceLocation", "ChargeType", "Currency"],
+            [[10.75, 20260819, scoped_resource, "App Service", "East US", "Usage", "USD"],
+             [2.25, 20261018, scoped_resource, "App Service", "East US", "Usage", "USD"],
+             [3.75, 20261116, scoped_resource, "App Service", "East US", "Usage", "USD"],
+             [99, 20261116, outside_resource, "App Service", "East US", "Usage", "USD"]],
+        ),
+    }], [RG], window=[start, end])
+    overview_30 = dashboard.slice_daily_cost_query(overview, default_window)
+    explorer_30 = dashboard.slice_daily_cost_query(explorer, default_window)
+    assert overview_30["scope_coverage"][0]["cost_usd"] == Decimal("6")
+    assert explorer_30["scope_coverage"][0]["excluded"] == 1
+    metadata = {"status": "ready", "source": "ARM MCP query_costs",
+                "refreshed_at": "2026-11-16T22:30:00Z", "scope_summary": [RG]}
+    sources = {
+        "overview": {**metadata, "window": default_window,
+                     "data": cost_query.summarize_cost_overview(overview_30)},
+        "explorer": {**metadata, "window": default_window,
+                     "data": dashboard.build_explorer_rows(explorer_30["included_rows"])},
+    }
+    history = {
+        "window": [start, end],
+        "overview": {**metadata, "window": [start, end], "data": overview["included_rows"]},
+        "explorer": {**metadata, "window": [start, end], "data": explorer["included_rows"]},
+    }
+    model = dashboard.build_dashboard_model(
+        sources, refreshed_at=metadata["refreshed_at"], scope_summary=[RG],
+        window=default_window, scope_coverage=overview_30["scope_coverage"], cost_history=history,
+    )
+    assert model["costHistory"]["available"]
+    assert model["tabs"][0]["metrics"][0]["value"] == "$6.00"
+    assert all("elsewhere" not in str(record["fields"]).lower() for record in model["costHistory"]["explorer"])
+
+
 @pytest.mark.parametrize(
     "records, message",
     [

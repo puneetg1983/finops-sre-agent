@@ -1,6 +1,7 @@
 """Offline consolidation of FinOps results into one evidence-aware dashboard."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -229,24 +230,273 @@ def _timestamp(value, field):
     return text
 
 
+_EXPLORER_FIELDS = ("resourceId", "subscriptionId", "resourceGroup", "serviceName",
+                    "resourceLocation", "chargeType")
+
+
+def _explorer_fields(row):
+    return [_models._text(row.get(field), field).strip() or "(unknown)"
+            for field in _EXPLORER_FIELDS]
+
+
+def _explorer_key(row):
+    values = _explorer_fields(row)
+    return tuple(value.casefold() if index in {0, 1, 2, 4} else value
+                 for index, value in enumerate(values))
+
+
 def build_explorer_rows(included_rows):
     """Aggregate already validated resource-cost rows; never discard unknown charges."""
-    totals = {}
-    fields = ("resourceId", "subscriptionId", "resourceGroup", "serviceName",
-              "resourceLocation", "chargeType")
+    totals, display = {}, {}
     for row in _rows(included_rows):
-        values = [_models._text(row.get(field), field).strip() or "(unknown)" for field in fields]
-        key = tuple(value.casefold() if index in {0, 1, 2, 4} else value
-                    for index, value in enumerate(values))
-        totals[key] = totals.get(key, 0) + _number(row, "cost")
+        key = _explorer_key(row)
+        display.setdefault(key, _explorer_fields(row))
+        totals[key] = totals.get(key, Decimal(0)) + _number(row, "cost")
     return [
-        dict(zip(fields, key), cost_usd=float(totals[key]))
+        dict(zip(_EXPLORER_FIELDS, display[key]), cost_usd=totals[key])
         for key in sorted(totals, key=lambda key: tuple((value.casefold(), value) for value in key))
     ]
 
 
+def _day(value, field):
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError(f"{field} must be a UTC date in YYYY-MM-DD format")
+    try:
+        result = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a UTC date in YYYY-MM-DD format") from exc
+    if result.isoformat() != value:
+        raise ValueError(f"{field} must be a UTC date in YYYY-MM-DD format")
+    return result
+
+
+def _window(value, field):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{field} must contain start and end dates")
+    start, end = (_day(item, field) for item in value)
+    if start > end:
+        raise ValueError(f"{field} start must not follow end")
+    return start, end
+
+
+def slice_daily_cost_rows(rows, window):
+    """Select inclusive UTC dates from already scope-filtered daily cost rows."""
+    start, end = _window(window, "window")
+    return [row for row in _rows(rows) if start <= _day(row.get("date"), "cost date") <= end]
+
+
+def slice_daily_cost_query(prepared, window):
+    """Slice a prepared daily query without retaining the longer window's totals."""
+    prepared = _models._object(prepared, "prepared")
+    if not isinstance(prepared.get("included_rows"), list):
+        raise ValueError("prepared.included_rows must be an array")
+    buckets = ("included", "excluded", "unattributed")
+    result = {
+        f"{bucket}_rows": slice_daily_cost_rows(prepared.get(f"{bucket}_rows", []), window)
+        for bucket in buckets
+    }
+    result["partial"] = _models._boolean(prepared.get("partial"), "prepared.partial")
+    result["warnings"] = _models._strings(prepared.get("warnings"), "prepared.warnings")
+    for field in ("source", "currency", "metric"):
+        if field in prepared:
+            result[field] = prepared[field]
+    original_coverage = _models._objects(prepared.get("scope_coverage", []), "scope_coverage")
+    coverage_scopes = {_models._text(item.get("scope"), "scope").casefold() for item in original_coverage}
+    complete_attribution = (
+        all(isinstance(prepared.get(f"{bucket}_rows"), list) for bucket in buckets)
+        and all(coverage_scopes)
+        and all(_models._text(row.get("queryScope"), "queryScope").casefold() in coverage_scopes
+                for bucket in buckets for row in result[f"{bucket}_rows"])
+    )
+    tallies = {scope: {"included": 0, "excluded": 0, "unattributed": 0, "cost_usd": Decimal(0)}
+               for scope in coverage_scopes}
+    if complete_attribution:
+        for bucket in buckets:
+            for row in result[f"{bucket}_rows"]:
+                scope = _models._text(row.get("queryScope"), "queryScope").casefold()
+                tallies[scope][bucket] += 1
+                if bucket == "included":
+                    tallies[scope]["cost_usd"] += _number(row, "cost")
+    coverage = []
+    for item in original_coverage:
+        entry = dict(item)
+        previous_detail = _models._text(item.get("detail"), "scope_coverage.detail")
+        if complete_attribution:
+            scope = _models._text(item.get("scope"), "scope").casefold()
+            entry.update(tallies[scope])
+            note = "Default-period query coverage."
+        else:
+            for field in ("included", "excluded", "unattributed", "cost_usd"):
+                entry[field] = None
+            note = "Default-period counts and cost unavailable for this source."
+        entry["detail"] = f"{previous_detail} {note}".strip()
+        coverage.append(entry)
+    result["scope_coverage"] = coverage
+    return result
+
+
+def _history(source_history, sources, scopes, default_window):
+    """Validate and compact the two independently scoped daily cost query shapes."""
+    history = _models._object(source_history, "cost_history")
+    default_start, default_end = _window(default_window, "window")
+    if (default_end - default_start).days != 29:
+        raise ValueError("cost_history requires a 30-day dashboard window")
+    if history.get("status") == "unavailable":
+        reason = _models._text(history.get("reason"), "cost_history.reason").strip()
+        if not reason:
+            raise ValueError("unavailable cost_history requires a reason")
+        return {"available": False, "reason": reason}
+
+    start, end = _window(history.get("window"), "cost_history.window")
+    if (end - start).days != 89 or end != default_end or default_start < start:
+        raise ValueError("cost_history must cover 90 inclusive days ending with the 30-day dashboard window")
+
+    rows_by_source = {}
+    for key in ("overview", "explorer"):
+        source = _models._object(sources.get(key), f"sources.{key}")
+        item = _models._object(history.get(key), f"cost_history.{key}")
+        if source.get("status") not in {"ready", "partial"} or item.get("status") != source.get("status"):
+            raise ValueError(f"cost_history.{key} status must match the dashboard source")
+        if source.get("window") != list(default_window):
+            raise ValueError(f"sources.{key} window must match the 30-day dashboard window")
+        for field in ("source", "refreshed_at"):
+            if not item.get(field) or item[field] != source.get(field):
+                raise ValueError(f"cost_history.{key} {field} must match the dashboard source")
+        if item.get("window") != list(history["window"]):
+            raise ValueError(f"cost_history.{key} window must match the 90-day history")
+        item_scopes = _models._strings(item.get("scope_summary"), "scope_summary")
+        if {s.casefold() for s in item_scopes} != {s.casefold() for s in scopes}:
+            raise ValueError(f"cost_history.{key} scope_summary must match dashboard scope")
+        if not isinstance(item.get("data"), list):
+            raise ValueError(f"cost_history.{key} data must be an array")
+        rows = _rows(item["data"])
+        for row in rows:
+            day = _day(row.get("date"), f"cost_history.{key} date")
+            if not start <= day <= end:
+                raise ValueError(f"cost_history.{key} contains a date outside its window")
+            _number(row, "cost")
+        rows_by_source[key] = rows
+
+    overview = {}
+    groups = {}
+    for row in rows_by_source["overview"]:
+        day = (_day(row["date"], "cost date") - start).days
+        service = _models._text(row.get("serviceName"), "serviceName").strip() or "(unknown)"
+        group = _models._text(row.get("resourceGroup"), "resourceGroup").strip() or "(unattributed)"
+        groups.setdefault(group.casefold(), group)
+        key = (day, service, group.casefold())
+        overview[key] = overview.get(key, Decimal(0)) + _number(row, "cost")
+
+    explorer, display = {}, {}
+    for row in rows_by_source["explorer"]:
+        key = _explorer_key(row)
+        display.setdefault(key, _explorer_fields(row))
+        day = (_day(row["date"], "cost date") - start).days
+        series = explorer.setdefault(key, {})
+        series[day] = series.get(day, Decimal(0)) + _number(row, "cost")
+
+    # The static, no-JavaScript default and the selectable data must describe the same 30 days.
+    default_offset = (default_start - start).days
+    overview_total = sum((amount for (day, _, _), amount in overview.items()
+                          if day >= default_offset), Decimal(0))
+    overview_data = _models._object(sources["overview"].get("data"), "overview.data")
+    expected_total = _models._decimal(_models._field(overview_data, "total_usd", "totalUsd"),
+                                      "overview.total_usd")
+    if _models._money(overview_total) != _models._money(expected_total):
+        raise ValueError("cost_history overview does not match the default dashboard window")
+    daily_totals, service_totals, group_totals = {}, {}, {}
+    for (day, service, group), amount in overview.items():
+        if day < default_offset:
+            continue
+        daily_totals[day] = daily_totals.get(day, Decimal(0)) + amount
+        service_totals[service] = service_totals.get(service, Decimal(0)) + amount
+        group_totals[group] = group_totals.get(group, Decimal(0)) + amount
+
+    def ranked(values):
+        return sorted(values, key=lambda item: (-item[1], item[0].casefold(), item[0]))[:15]
+
+    expected_daily = _models._objects(
+        _models._field(overview_data, "daily", "daily_totals", default=[]), "overview.daily")
+    expected_services = _models._objects(
+        _models._field(overview_data, "by_service", "top_services", default=[]), "overview.by_service")
+    expected_groups = _models._objects(
+        _models._field(overview_data, "by_resource_group", "top_resource_groups", default=[]),
+        "overview.by_resource_group")
+    actual_daily = sorted((day, _models._money(value)) for day, value in daily_totals.items())
+    supplied_daily = sorted(
+        ((_day(_models._field(row, "date", "label"), "overview date") - start).days,
+         _models._money(_models._decimal(_models._field(row, "cost_usd", "costUsd", "cost"), "daily cost")))
+        for row in expected_daily
+    )
+    actual_services = [(key, _models._money(value)) for key, value in ranked(service_totals.items())]
+    supplied_services = ranked(
+        (_models._text(_models._field(row, "service", "name"), "service"),
+         _models._decimal(_models._field(row, "cost_usd", "costUsd", "cost"), "service cost"))
+        for row in expected_services
+    )
+    supplied_services = [(key, _models._money(value)) for key, value in supplied_services]
+    actual_groups = [(key, _models._money(value)) for key, value in ranked(group_totals.items())]
+    supplied_groups = ranked(
+        ((_models._text(_models._field(row, "resource_group", "resourceGroup", "name"),
+                        "resource group") or "(unattributed)").casefold(),
+         _models._decimal(_models._field(row, "cost_usd", "costUsd", "cost"), "group cost"))
+        for row in expected_groups
+    )
+    supplied_groups = [(key, _models._money(value)) for key, value in supplied_groups]
+    if (len(expected_services) != len(actual_services) or len(expected_groups) != len(actual_groups)
+            or actual_daily != supplied_daily or actual_services != supplied_services
+            or actual_groups != supplied_groups):
+        raise ValueError("cost_history overview breakdowns do not match the default dashboard window")
+
+    expected_explorer = {}
+    for row in _rows(sources["explorer"].get("data")):
+        key = _explorer_key(row)
+        if key in expected_explorer:
+            raise ValueError("default explorer contains duplicate resource records")
+        expected_explorer[key] = _models._money(_number(row, "cost_usd"))
+    default_explorer = {
+        key: _models._money(sum((amount for day, amount in series.items() if day >= default_offset),
+                               Decimal(0)))
+        for key, series in explorer.items() if any(day >= default_offset for day in series)
+    }
+    if default_explorer != expected_explorer:
+        raise ValueError("cost_history explorer does not match the default dashboard window")
+
+    amounts = list(overview.values()) + [amount for series in explorer.values() for amount in series.values()]
+    scale = max([2] + [-amount.as_tuple().exponent for amount in amounts])
+    if scale > 28:
+        raise ValueError("cost_history exceeds the supported 28 decimal places")
+
+    def units(amount):
+        return format(amount, f".{scale}f").replace(".", "")
+
+    services = sorted({service for _, service, _ in overview})
+    group_keys = sorted(groups)
+    service_index = {name: index for index, name in enumerate(services)}
+    group_index = {key: index for index, key in enumerate(group_keys)}
+    overview_rows = [
+        [day, service_index[service], group_index[group], units(amount)]
+        for (day, service, group), amount in sorted(overview.items())
+    ]
+    records = []
+    for key in sorted(explorer, key=lambda item: tuple((value.casefold(), value) for value in item)):
+        series = explorer[key]
+        records.append({
+            "fields": display[key],
+            "active": key in default_explorer,
+            "series": [[day, units(amount)] for day, amount in sorted(series.items())],
+        })
+    return {
+        "available": True, "window": list(history["window"]), "scale": scale,
+        "overview": {"services": services, "groups": [groups[key] for key in group_keys],
+                     "rows": overview_rows},
+        "explorer": records,
+    }
+
+
 def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
-                          scope_mode="managed", scope_coverage=None, warnings=None):
+                          scope_mode="managed", scope_coverage=None, warnings=None,
+                          cost_history=None):
     """Consolidate source envelopes; absent or failed inputs never become healthy zeros.
 
     Sources are keyed by tab id. Each envelope contains status (ready/partial/unavailable/
@@ -268,6 +518,7 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
     start, end = [date.fromisoformat(value) for value in window]
     if start > end:
         raise ValueError("window start must not follow end")
+    history = _history(cost_history, sources, scopes, window) if cost_history is not None else None
     period = " to ".join(window)
     tabs, coverage, all_warnings = [], [], _models._strings(warnings, "warnings")
     any_partial = False
@@ -309,9 +560,20 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
                     partial=status == "partial", warnings=[reason] if reason else [],
                 )
             else:
-                panel = _extra(tab_id, envelope["data"])
+                data = envelope["data"]
+                if tab_id == "explorer" and history and history["available"]:
+                    existing = {_explorer_key(row): row for row in _rows(data)}
+                    data = [existing.get(_explorer_key(dict(zip(_EXPLORER_FIELDS, record["fields"])))) or
+                            dict(zip(_EXPLORER_FIELDS, record["fields"]), cost_usd=0)
+                            for record in history["explorer"]]
+                panel = _extra(tab_id, data)
             if tab_id == "overview":
                 panel["sections"][0]["visualization"] = "service-bars"
+                if history and history["available"]:
+                    panel["sections"][0]["toneValues"] = history["overview"]["services"]
+                    for section in panel["sections"]:
+                        if section.get("title") == "Scope coverage":
+                            section["description"] += " Counts and cost refer to the default 30-day window."
             if tab_id in {"explorer", "rightsizing"}:
                 section = panel["sections"][0]
                 section["breakdown"] = (
@@ -319,6 +581,11 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
                     if tab_id == "explorer" else
                     {"kind": "savings", "dimensions": [("Resource type", 1), ("Opportunity", 2)], "amount": 6}
                 )
+                if tab_id == "explorer" and history and history["available"]:
+                    section["historyRecords"] = [
+                        {"fields": record["fields"], "active": record["active"]}
+                        for record in history["explorer"]
+                    ]
                 panel["chart"] = None
             if panel.get("partial"):
                 status = "partial"
@@ -335,6 +602,8 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
             "sections": panel.get("sections", []),
         })
     scope_section, partial_coverage = _models._scope_coverage_section(scope_coverage)
+    if scope_section and history and history["available"]:
+        scope_section["description"] += " Counts and cost refer to the default 30-day window."
     tabs.append({
         "id": "coverage", "title": "Data & scope", "description": "Coverage is not a claim of product parity.",
         "status": "partial" if any_partial or partial_coverage else "ready",
@@ -352,7 +621,7 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
             ]),
         ],
     })
-    return {
+    result = {
         "title": "FinOps: Dashboard",
         "description": "Cloud economics, operational risk and accountability in one workspace.",
         "refreshedAt": refreshed_at, "scopeSummary": scopes, "scopeMode": scope_mode,
@@ -360,3 +629,6 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
         "warnings": _models._stable_strings(all_warnings),
         "metrics": tabs[0]["metrics"], "sections": [], "tabs": tabs,
     }
+    if history is not None:
+        result["costHistory"] = history
+    return result

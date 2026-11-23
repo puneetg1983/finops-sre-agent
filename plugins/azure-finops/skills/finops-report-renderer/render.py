@@ -27,6 +27,8 @@ _STATUS_LABELS = {
     "unavailable": "Unavailable",
     "unsupported": "Not supported",
 }
+_LIVE_REPORT_MAX_BYTES = 10_000_000
+_NONCE_ALLOWANCE_BYTES = 4096
 _TAB_ICONS = {
     "overview": "home",
     "explorer": "product-cost-management",
@@ -64,7 +66,11 @@ _DASHBOARD_SCRIPT = """
   const search = document.getElementById('table-search');
   const count = document.getElementById('search-count');
   const sectionSelect = document.getElementById('section-select');
-  const money = cents => (cents / 100).toLocaleString('en-US', {style: 'currency', currency: 'USD'});
+  const money = cents => {
+    const magnitude = Math.abs(cents);
+    return (cents < 0 ? '-' : '') + '$' + Math.trunc(magnitude / 100).toLocaleString('en-US') +
+      '.' + String(magnitude % 100).padStart(2, '0');
+  };
   const browsers = new Map();
   const chartAnimations = new Set();
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -138,9 +144,7 @@ _DASHBOARD_SCRIPT = """
       });
     });
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
-      state.tones.set(chart.dataset.dimension, new Map(
-        [...chart.querySelectorAll('button[data-value]')].map(button => [button.dataset.value, button.dataset.tone])
-      ));
+      state.tones.set(chart.dataset.dimension, new Map(Object.entries(JSON.parse(chart.dataset.toneMap))));
       chart.addEventListener('click', event => {
         const button = event.target.closest('[data-value]');
         if (!button) return;
@@ -218,7 +222,8 @@ _DASHBOARD_SCRIPT = """
       button.disabled = false;
       button.setAttribute('aria-pressed', String(!state.selected.has(button.dataset.filterAll)));
     });
-    const matches = (row, except) => row.dataset.search.toLocaleLowerCase().includes(term) &&
+    const matches = (row, except) => row.dataset.periodPresent !== 'false' &&
+      row.dataset.search.toLocaleLowerCase().includes(term) &&
       [...state.selected].every(([key, values]) => key === except || values.has(row.dataset[key]));
     let total = 0, visible = 0, quantified = 0;
     state.rows.forEach(row => {
@@ -339,6 +344,281 @@ _DASHBOARD_SCRIPT = """
     printDetails?.forEach(detail => { detail.open = false; });
     printDetails = null;
   });
+  const historyData = document.getElementById('cost-history-data');
+  if (historyData) {
+    const range = document.getElementById('history-range');
+    const custom = document.getElementById('history-custom');
+    const startInput = document.getElementById('history-start');
+    const endInput = document.getElementById('history-end');
+    const error = document.getElementById('history-error');
+    const period = document.getElementById('history-period');
+    const history = JSON.parse(historyData.textContent);
+    const baseTime = Date.parse(history.window[0] + 'T00:00:00Z');
+    const dayMs = 86400000;
+    const dayLabel = day => new Date(baseTime + day * dayMs).toISOString().slice(0, 10);
+    const offset = value => {
+      if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)) return null;
+      const time = Date.parse(value + 'T00:00:00Z');
+      if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== value) return null;
+      return (time - baseTime) / dayMs;
+    };
+    const showError = message => { error.textContent = message; error.hidden = false; };
+    if (typeof BigInt !== 'function') {
+      showError('This browser cannot calculate historical costs. The saved 30-day view remains available.');
+    } else {
+      const zero = BigInt(0), two = BigInt(2);
+      const factor = BigInt(10) ** BigInt(history.scale - 2);
+      const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+      const overview = history.overview.rows.map(([day, service, group, amount]) =>
+        [day, service, group, BigInt(amount)]);
+      const series = history.explorer.map(record => record.map(([day, amount]) => [day, BigInt(amount)]));
+      const costBrowser = document.querySelector('#panel-explorer .resource-browser');
+      const costState = browsers.get(costBrowser);
+      let appliedOption = '30';
+      function cents(amount) {
+        const negative = amount < zero;
+        const magnitude = negative ? -amount : amount;
+        let value = magnitude / factor;
+        if ((magnitude % factor) * two >= factor) value += BigInt(1);
+        if (value > maxSafe) throw new RangeError('The selected cost totals exceed this browser’s exact range.');
+        return Number(negative ? -value : value);
+      }
+      function add(map, key, amount) {
+        map.set(key, (map.get(key) || zero) + amount);
+      }
+      function ranked(map, names) {
+        return [...map].sort((a, b) => {
+          if (a[1] !== b[1]) return a[1] > b[1] ? -1 : 1;
+          const first = names[a[0]].toLocaleLowerCase(), second = names[b[0]].toLocaleLowerCase();
+          return first < second ? -1 : first > second ? 1 : 0;
+        }).slice(0, 15).map(([key, amount]) => ({key, cents: cents(amount)}));
+      }
+      function calculate(first, last) {
+        const daily = new Map(), services = new Map(), groups = new Map();
+        let total = zero;
+        overview.forEach(([day, service, group, amount]) => {
+          if (day < first || day > last) return;
+          total += amount;
+          add(daily, day, amount); add(services, service, amount); add(groups, group, amount);
+        });
+        const resources = series.map(record => {
+          let sum = zero, present = false;
+          record.forEach(([day, amount]) => {
+            if (day >= first && day <= last) { sum += amount; present = true; }
+          });
+          return {present, cents: cents(sum)};
+        });
+        let magnitude = 0;
+        resources.forEach(item => {
+          magnitude += Math.abs(item.cents);
+          if (!Number.isSafeInteger(magnitude)) {
+            throw new RangeError('The selected resource totals exceed this browser’s exact range.');
+          }
+        });
+        return {
+          total: cents(total),
+          daily: [...daily].sort((a, b) => a[0] - b[0]).map(([day, amount]) => ({day, cents: cents(amount)})),
+          services: ranked(services, history.overview.services.map(item => item.name)),
+          groups: ranked(groups, history.overview.groups),
+          resources
+        };
+      }
+      function appendRow(tbody, values) {
+        const row = document.createElement('tr');
+        values.forEach(value => {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          row.append(cell);
+        });
+        tbody.append(row);
+      }
+      function empty(container, message) {
+        const section = document.createElement('section');
+        const paragraph = document.createElement('p');
+        paragraph.className = 'empty';
+        paragraph.textContent = message;
+        section.append(paragraph);
+        container.replaceChildren(section);
+      }
+      function drawTrend(daily) {
+        const slot = document.getElementById('history-trend-slot');
+        if (!daily.length) { empty(slot, 'No daily cost records for the selected dates.'); return; }
+        const open = slot.querySelector('.chart-data')?.open || false;
+        const content = document.getElementById('history-trend-template').content.cloneNode(true);
+        content.querySelector('.chart-data').open = open;
+        content.querySelector('.chart-count').textContent = daily.length + ' data points';
+        const values = daily.map(item => item.cents / 100);
+        const low = Math.min(0, ...values), high = Math.max(0, ...values), span = high - low || 1;
+        const axis = value => {
+          if (value === 0) return '0';
+          if (Math.abs(value) >= 1) return value.toLocaleString('en-US', {maximumFractionDigits: 2});
+          return Number(value.toPrecision(4)).toString();
+        };
+        content.querySelectorAll('.chart-ticks span').forEach((tick, index) => {
+          tick.textContent = axis([high, low + (high - low) / 2, low][index]);
+        });
+        const labels = content.querySelector('.chart-x-labels');
+        labels.replaceChildren();
+        [daily[0].day, ...(daily.length > 1 ? [daily[daily.length - 1].day] : [])].forEach(day => {
+          const label = document.createElement('span');
+          label.textContent = dayLabel(day);
+          labels.append(label);
+        });
+        const svg = content.querySelector('figure svg');
+        svg.querySelectorAll('polyline, circle, .chart-baseline').forEach(shape => shape.remove());
+        const ns = 'http://www.w3.org/2000/svg';
+        if (low < 0 && high > 0) {
+          const baseline = document.createElementNS(ns, 'line');
+          const y = 152 - (0 - low) / span * 144;
+          [['x1', 8], ['x2', 792], ['y1', y], ['y2', y], ['class', 'chart-baseline'],
+           ['vector-effect', 'non-scaling-stroke']].forEach(([name, value]) => baseline.setAttribute(name, value));
+          svg.append(baseline);
+        }
+        const coordinates = values.map((value, index) => [
+          values.length === 1 ? 400 : 8 + index * 784 / (values.length - 1),
+          152 - (value - low) / span * 144
+        ]);
+        const line = document.createElementNS(ns, 'polyline');
+        line.setAttribute('points', coordinates.map(point => point.join(',')).join(' '));
+        line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'currentColor');
+        line.setAttribute('stroke-width', '3'); line.setAttribute('vector-effect', 'non-scaling-stroke');
+        svg.append(line);
+        if (coordinates.length <= 31) coordinates.forEach(([x, y]) => {
+          const dot = document.createElementNS(ns, 'circle');
+          dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('r', 3);
+          dot.setAttribute('fill', 'currentColor'); svg.append(dot);
+        });
+        const tbody = content.querySelector('.chart-data tbody');
+        tbody.replaceChildren();
+        daily.forEach(item => appendRow(tbody, [dayLabel(item.day), money(item.cents)]));
+        slot.replaceChildren(content);
+      }
+      function drawServices(items) {
+        const slot = document.getElementById('history-services-slot');
+        const open = slot.querySelector('.chart-data')?.open || false;
+        const content = document.getElementById('history-services-template').content.cloneNode(true);
+        const chart = content.querySelector('.service-chart');
+        const list = content.querySelector('.service-bars');
+        const details = content.querySelector('.chart-data');
+        details.open = open;
+        const tbody = details.querySelector('tbody');
+        list.replaceChildren(); tbody.replaceChildren();
+        const maximum = Math.max(1, ...items.map(item => Math.abs(item.cents)));
+        items.forEach(item => {
+          const service = history.overview.services[item.key];
+          const li = document.createElement('li');
+          li.className = 'chart-tone-' + service.tone;
+          const symbol = document.createElement('span'); symbol.className = 'service-symbol';
+          const ns = 'http://www.w3.org/2000/svg';
+          const icon = document.createElementNS(ns, 'svg');
+          icon.setAttribute('class', 'icon'); icon.setAttribute('aria-hidden', 'true');
+          icon.setAttribute('focusable', 'false');
+          const use = document.createElementNS(ns, 'use');
+          use.setAttribute('href', '#' + service.icon); icon.append(use); symbol.append(icon);
+          const name = document.createElement('span');
+          name.className = 'service-label'; name.textContent = service.name;
+          const amount = document.createElement('strong'); amount.textContent = money(item.cents);
+          const meter = document.createElement('meter');
+          meter.min = 0; meter.max = maximum; meter.value = Math.abs(item.cents);
+          meter.setAttribute('aria-label', service.name + ' cost magnitude in USD cents');
+          li.append(symbol, name, amount, meter); list.append(li);
+          appendRow(tbody, [service.name, money(item.cents)]);
+        });
+        if (!items.length) {
+          list.hidden = true; details.hidden = true;
+          const message = document.createElement('p');
+          message.className = 'empty'; message.textContent = 'No service cost rows for the selected dates.';
+          chart.append(message);
+        }
+        slot.replaceChildren(content);
+      }
+      function drawGroups(items) {
+        const slot = document.getElementById('history-groups-slot');
+        const content = document.getElementById('history-groups-template').content.cloneNode(true);
+        const table = content.querySelector('.table-wrap');
+        const tbody = table.querySelector('tbody');
+        tbody.replaceChildren();
+        items.forEach(item => appendRow(tbody, [history.overview.groups[item.key], money(item.cents)]));
+        if (!items.length) {
+          table.hidden = true;
+          const message = document.createElement('p');
+          message.className = 'empty'; message.textContent = 'No resource-group cost rows for the selected dates.';
+          content.querySelector('section').append(message);
+        }
+        slot.replaceChildren(content);
+      }
+      function applyRange(first, last, option) {
+        let result;
+        try { result = calculate(first, last); }
+        catch (failure) {
+          if (!(failure instanceof RangeError)) throw failure;
+          showError(failure.message);
+          return false;
+        }
+        const start = dayLabel(first), end = dayLabel(last);
+        const metrics = document.querySelectorAll('#panel-overview .metric');
+        metrics[0].querySelector('.metric-label').textContent =
+          option === '30' ? '30-day spend' : option === '90' ? '90-day spend' : 'Selected-period spend';
+        metrics[0].querySelector('.metric-value').textContent = money(result.total);
+        metrics[1].querySelector('.metric-value').textContent = String(result.daily.length);
+        metrics[2].querySelector('.metric-value').textContent = String(result.services.length);
+        drawTrend(result.daily); drawServices(result.services); drawGroups(result.groups);
+        costState.rows.forEach(row => {
+          const item = result.resources[Number(row.dataset.historyIndex)];
+          const detail = row.nextElementSibling;
+          row.dataset.periodPresent = String(item.present);
+          row.dataset.amount = String(item.cents);
+          row.dataset.search = row.dataset.searchBase + ' ' + money(item.cents);
+          row.querySelector('.resource-cost').textContent = money(item.cents);
+          detail.querySelector('.resource-detail-cost').textContent = money(item.cents);
+          row.classList.toggle('period-inactive', !item.present);
+          detail.classList.toggle('period-inactive', !item.present);
+        });
+        costState.rows.sort((a, b) => {
+          const present = Number(b.dataset.periodPresent === 'true') - Number(a.dataset.periodPresent === 'true');
+          return present || Number(b.dataset.amount) - Number(a.dataset.amount) ||
+            Number(a.dataset.historyIndex) - Number(b.dataset.historyIndex);
+        });
+        const pairs = costState.rows.map(row => [row, row.nextElementSibling]);
+        const tbody = costBrowser.querySelector('tbody');
+        pairs.forEach(([row, detail]) => tbody.append(row, detail));
+        updateBrowser(costBrowser, '');
+        period.textContent = start + ' to ' + end + ' UTC';
+        ['overview', 'explorer'].forEach(id => {
+          document.querySelector('#panel-' + id + ' .source-period').textContent = start + ' to ' + end + ' UTC';
+        });
+        document.querySelectorAll('#coverage-source tbody tr').forEach(row => {
+          if (['Overview', 'Cost explorer'].includes(row.cells[0].textContent)) {
+            row.cells[4].textContent = start + ' to ' + end + ' UTC';
+          }
+        });
+        startInput.value = start; endInput.value = end;
+        error.hidden = true; appliedOption = option;
+        filter();
+        return true;
+      }
+      range.disabled = false;
+      range.addEventListener('change', () => {
+        error.hidden = true;
+        custom.hidden = range.value !== 'custom';
+        if (range.value === 'custom') { startInput.focus(); return; }
+        const last = offset(history.window[1]);
+        const first = range.value === '90' ? 0 : last - 29;
+        if (!applyRange(first, last, range.value)) {
+          range.value = appliedOption;
+          custom.hidden = appliedOption !== 'custom';
+        }
+      });
+      document.getElementById('history-apply').addEventListener('click', () => {
+        const first = offset(startInput.value), last = offset(endInput.value);
+        if (first === null || last === null || first < 0 || last > 89 || first > last) {
+          showError('Choose valid UTC dates within the saved 90-day history, with From on or before To.');
+          return;
+        }
+        applyRange(first, last, 'custom');
+      });
+    }
+  }
   if ('IntersectionObserver' in window && Element.prototype.animate) {
     const observer = new IntersectionObserver(entries => {
       entries.forEach(entry => {
@@ -453,8 +733,9 @@ def _sections(model, heading_level=2, id_prefix="section"):
             )
         else:
             content = f'<p class="empty">{_escape(empty_message)}</p>'
+        section_id = ' id="coverage-source"' if id_prefix == "coverage" and title == "Source coverage" else ""
         rendered.append(
-            f'<section><h{heading_level}>{_escape(title)}</h{heading_level}>'
+            f'<section{section_id}><h{heading_level}>{_escape(title)}</h{heading_level}>'
             f'<p class="section-description">'
             f"{_escape(description)}</p>{content}</section>"
         )
@@ -497,30 +778,49 @@ def _resource_browser(section, id_prefix="resource"):
     dimensions = config["dimensions"]
     savings = config["kind"] == "savings"
     groups = [{}, {}]
+    all_values = [set(), set()]
     body = []
     total = 0
     unknown = 0
+    visible_records = 0
     filter_values = {"subscription": set(), "type": set(), "d1": set()}
+    history_records = section.get("historyRecords")
+    def resource_key(fields):
+        return tuple(value.strip().casefold() if index in {0, 1, 2, 4} else value.strip()
+                     for index, value in enumerate(fields))
+
+    history_lookup = {
+        resource_key(record["fields"]): (index, record["active"])
+        for index, record in enumerate(history_records or [])
+    }
     rows = section["rows"]
     if not savings:
         rows = sorted(rows, key=lambda row: -Decimal(row[config["amount"]].replace("$", "").replace(",", "")))
     for row_index, row in enumerate(rows):
+        history_record = history_lookup.get(resource_key(row[:6])) if history_records is not None else None
+        if history_records is not None and history_record is None:
+            raise ValueError("resource record is missing its cost history")
+        active = history_record is None or history_record[1]
         amount = row[config["amount"]]
         cents = None if amount == "\u2014" else int(Decimal(amount.replace("$", "").replace(",", "")) * 100)
-        if cents is None:
-            unknown += 1
-        else:
-            total += cents
+        if active:
+            visible_records += 1
+            if cents is None:
+                unknown += 1
+            else:
+                total += cents
         attrs = []
         for index, (_, column) in enumerate(dimensions):
             value = str(row[column]).strip() or "(unknown)"
             if savings and index == 0:
                 value = _resource_type_label(value)
             attrs.append(f'data-d{index}="{_escape(value)}"')
-            group = groups[index].setdefault(value, [0, 0, 0])
-            group[0] += cents or 0
-            group[1] += 1
-            group[2] += cents is None
+            all_values[index].add(value)
+            if active:
+                group = groups[index].setdefault(value, [0, 0, 0])
+                group[0] += cents or 0
+                group[1] += 1
+                group[2] += cents is None
         identity = str(row[0])
         resource_type = _resource_type_from_id(identity) if not savings else str(row[1])
         if not savings:
@@ -536,8 +836,10 @@ def _resource_browser(section, id_prefix="resource"):
         group_name = next((segments[i + 1] for i, part in enumerate(segments[:-1])
                            if part.lower() == "resourcegroups"), "(unknown)")
         details = "".join(
-            f'<div class="resource-detail-field"><dt>{_escape(label)}</dt><dd>{_escape(value)}</dd></div>'
-            for label, value in list(zip(section["columns"], row))[1:]
+            f'<div class="resource-detail-field"><dt>{_escape(label)}</dt>'
+            + ('<dd class="resource-detail-cost">' if not savings and index == config["amount"] else "<dd>")
+            + f'{_escape(value)}</dd></div>'
+            for index, (label, value) in enumerate(zip(section["columns"], row)) if index
         )
         if not savings:
             details += f'<div class="resource-detail-field"><dt>Resource type</dt><dd>{_escape(resource_type)}</dd></div>'
@@ -557,18 +859,25 @@ def _resource_browser(section, id_prefix="resource"):
             if savings else
             [identity_html, _escape(row[3]), _escape(row[4]), _escape(row[6])]
         )
+        if history_record is not None:
+            attrs.extend([f'data-history-index="{history_record[0]}"',
+                          f'data-period-present="{str(active).lower()}"',
+                          f'data-search-base="{_escape(" ".join(str(cell) for cell in row[:6]))}"'])
+        inactive = ' class="period-inactive" hidden' if not active else ""
         body.append(
-            f'<tr {" ".join(attrs)} data-amount="{cents if cents is not None else ""}" '
+            f'<tr{inactive} {" ".join(attrs)} data-amount="{cents if cents is not None else ""}" '
             f'data-search="{_escape(" ".join(str(cell) for cell in row))}">'
-            + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
-            + f'<tr class="resource-detail-row" id="{detail_id}"><td colspan="{len(cells)}">'
+            + "".join(('<td class="resource-cost">' if not savings and index == 3 else "<td>")
+                      + cell + "</td>" for index, cell in enumerate(cells)) + "</tr>"
+            + f'<tr class="resource-detail-row{" period-inactive" if not active else ""}"'
+            f'{" hidden" if not active else ""} id="{detail_id}"><td colspan="{len(cells)}">'
             f'<div class="resource-detail-panel"><h4>Resource details</h4><dl>{details}</dl></div></td></tr>'
         )
     charts = []
     for index, (label, _) in enumerate(dimensions):
         region = not savings and index == 1
         entries = sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0]))
-        tones = _chart_tones(groups[index])
+        tones = _chart_tones(all_values[index])
         pie, pie_total = _region_pie(entries, tones) if region else ("", 0)
         maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
         bars = []
@@ -599,6 +908,7 @@ def _resource_browser(section, id_prefix="resource"):
             )
         charts.append(
             f'<div class="breakdown-chart" data-dimension="d{index}"'
+            + f' data-tone-map="{_escape(json.dumps(tones, ensure_ascii=True))}"'
             + (' data-visualization="region-pie"' if region else "") +
             f'><h4>By {_escape(label.lower())}</h4>{chart_body}</div>'
         )
@@ -629,10 +939,10 @@ def _resource_browser(section, id_prefix="resource"):
         '<p class="breakdown-instructions">Select a bar, pie slice or region label to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
         f'<div class="breakdown-grid">{"".join(charts)}</div>'
         '<div class="breakdown-toolbar"><p class="breakdown-result" role="status">'
-        f'{len(body)} records · {"No quantified amount" if body and unknown == len(body) else _usd(total)}'
+        f'{visible_records} records · {"No quantified amount" if visible_records and unknown == visible_records else _usd(total)}'
         + (f" · {unknown} unquantified" if unknown else "") +
         '</p><button type="button" class="clear-breakdown" disabled>Clear filters</button></div>'
-        f'<p class="breakdown-empty"{ " hidden" if body else ""}>No records match these filters.</p>'
+        f'<p class="breakdown-empty"{ " hidden" if visible_records else ""}>No records match these filters.</p>'
         '<p class="breakdown-print-note">Complete saved resource detail; interactive filters are not applied to print.</p>'
         '<div class="table-wrap" role="region" tabindex="0" aria-label="' + _escape(section["title"]) + ' table">'
         '<table class="resource-table"><thead><tr>'
@@ -707,7 +1017,7 @@ def _service_bars(section):
     values = [(str(row[0]), int(Decimal(row[1].replace("$", "").replace(",", "")) * 100))
               for row in section["rows"]]
     maximum = max([abs(value) for _, value in values] + [1])
-    tones = _chart_tones(name for name, _ in values)
+    tones = _chart_tones(section.get("toneValues") or [name for name, _ in values])
     bars = "".join(
         f'<li class="chart-tone-{tones[name]}"><span class="service-symbol">{_icon(_service_icon(name))}</span>'
         f'<span class="service-label">{_escape(name)}</span><strong>{_usd(value)}</strong>'
@@ -864,6 +1174,77 @@ def _dashboard_chart(model):
     )
 
 
+def _cost_history_controls(model):
+    history = model.get("costHistory")
+    if history is None:
+        return ""
+    default_start, default_end = model["window"]
+    available = history["available"]
+    reason = "" if available else (
+        f'<p class="history-unavailable" role="status">90-day history unavailable: {_escape(history["reason"])}</p>'
+    )
+    date_fields = ""
+    payload = ""
+    if available:
+        start, end = history["window"]
+        services = history["overview"]["services"]
+        tones = _chart_tones(services)
+        service_data = []
+        for name in services:
+            icon = _service_icon(name)
+            service_data.append({
+                "name": name, "tone": tones[name],
+                "icon": icon if icon.startswith("product-") else "fluent-" + icon,
+            })
+        data = {
+            "window": history["window"], "defaultWindow": model["window"], "scale": history["scale"],
+            "overview": {**history["overview"], "services": service_data},
+            "explorer": [record["series"] for record in history["explorer"]],
+        }
+        encoded = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
+        encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        date_fields = (
+            '<div class="history-custom" id="history-custom" hidden>'
+            f'<label for="history-start">From <input id="history-start" type="date" min="{_escape(start)}" '
+            f'max="{_escape(end)}" value="{_escape(default_start)}"></label>'
+            f'<label for="history-end">To <input id="history-end" type="date" min="{_escape(start)}" '
+            f'max="{_escape(end)}" value="{_escape(default_end)}"></label>'
+            '<button type="button" id="history-apply">Apply dates</button></div>'
+            '<p class="history-error" id="history-error" role="alert" hidden></p>'
+        )
+        trend_template = _dashboard_chart({"chart": {
+            "label": "Daily ActualCost (USD)", "type": "line",
+            "labels": ["2000-01-01"], "values": [1.0],
+        }})
+        services_template = _service_bars({
+            "title": "Top services", "description": "Service totals ranked by cost.",
+            "columns": ["Service", "Cost"], "rows": [["Service", "$1.00"]],
+        })
+        groups_template = _sections({"sections": [{
+            "title": "Top resource groups", "description": "Resource-group totals ranked by cost.",
+            "columns": ["Resource group", "Cost"], "rows": [["Resource group", "$1.00"]],
+        }]}, heading_level=3)
+        payload = (
+            f'<script type="application/json" id="cost-history-data" nonce="{{REPORT_NONCE}}">{encoded}</script>'
+            f'<template id="history-trend-template">{trend_template}</template>'
+            f'<template id="history-services-template">{services_template}</template>'
+            f'<template id="history-groups-template">{groups_template}</template>'
+        )
+    return (
+        '<section class="cost-history"><div class="history-heading">'
+        f'{_icon("calendar-clock")}<label for="history-range">Cost history</label>'
+        '<select id="history-range" disabled>'
+        '<option value="30">Last 30 days</option>'
+        f'<option value="90"{" disabled" if not available else ""}>Last 90 days</option>'
+        f'<option value="custom"{" disabled" if not available else ""}>Custom dates</option></select>'
+        f'<strong id="history-period" role="status">{_escape(default_start)} to {_escape(default_end)} UTC</strong>'
+        '</div><p class="history-help">Applies to Overview and Cost explorer. Other sections retain their '
+        'own source periods. Daily UTC dates; hourly cost data is not available in this snapshot.</p>'
+        '<p class="history-no-js">Date selection requires JavaScript; showing the saved 30-day view.</p>'
+        + date_fields + reason + payload + '</section>'
+    )
+
+
 def _dashboard(model, intro=""):
     tabs = _list(model.get("tabs"), "tabs")
     if not tabs:
@@ -895,6 +1276,17 @@ def _dashboard(model, intro=""):
             f'<option value="{index}">{_escape(title)} - {status_label}</option>'
         )
         panel_warnings = str(tab.get("reason") or "")
+        panel_body = _dashboard_chart(tab) + _sections(tab, heading_level=3, id_prefix=key)
+        if key == "overview" and model.get("costHistory", {}).get("available"):
+            sections = tab["sections"]
+            panel_body = (
+                '<div class="history-trend-slot" id="history-trend-slot">' + _dashboard_chart(tab) + '</div>'
+                '<div class="history-services-slot" id="history-services-slot">'
+                + _sections({"sections": sections[:1]}, heading_level=3, id_prefix=key) + '</div>'
+                '<div class="history-groups-slot" id="history-groups-slot">'
+                + _sections({"sections": sections[1:2]}, heading_level=3, id_prefix=key) + '</div>'
+                + _sections({"sections": sections[2:]}, heading_level=3, id_prefix=key)
+            )
         panels.append(
             f'<div role="tabpanel" tabindex="0" id="panel-{key}" aria-labelledby="heading-{key}">'
             f'<section class="panel-intro"><div class="panel-heading">'
@@ -903,10 +1295,10 @@ def _dashboard(model, intro=""):
             f'<span class="status-badge {status}">{status_label}</span></div>'
             f'<p class="provenance">Source: {_escape(tab.get("source"))} '
             f'<span aria-hidden="true"> | </span> As of: {_escape(tab.get("refreshedAt") or "Unknown")} '
-            f'<span aria-hidden="true"> | </span> {_escape(tab.get("period"))}</p>'
+            f'<span aria-hidden="true"> | </span> <span class="source-period">{_escape(tab.get("period"))}</span></p>'
             + (f'<aside class="warnings">{_escape(panel_warnings)}</aside>' if panel_warnings else "")
             + '</section>' + (_metrics(tab) if tab.get("metrics") else "")
-            + _dashboard_chart(tab) + _sections(tab, heading_level=3, id_prefix=key) + '</div>'
+            + panel_body + '</div>'
         )
     return (
         '<div class="dashboard-layout"><aside class="dashboard-sidebar">'
@@ -917,7 +1309,8 @@ def _dashboard(model, intro=""):
         '<div class="mobile-section-selector"><label for="section-select">Report section</label>'
         '<select id="section-select">' + "".join(options) + '</select></div>'
         '<nav role="tablist" aria-label="FinOps sections" aria-orientation="vertical">'
-        + "".join(buttons) + '</nav></aside><div class="dashboard-content">' + intro +
+        + "".join(buttons) + '</nav></aside><div class="dashboard-content">' + intro
+        + _cost_history_controls(model) +
         '<div class="toolbar"><div class="search-control">'
         f'{_icon("search")}<label class="sr-only" for="table-search">Search table rows in this section</label>'
         '<input id="table-search" type="search" placeholder="Search rows in this section" '
@@ -1026,7 +1419,7 @@ def render_report(model):
         if is_dashboard else _CSP
     )
 
-    return f"""<!doctype html>
+    report = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1051,6 +1444,9 @@ def render_report(model):
 </body>
 </html>
 """
+    if is_dashboard and len(report.encode("utf-8")) > _LIVE_REPORT_MAX_BYTES - _NONCE_ALLOWANCE_BYTES:
+        raise ValueError("dashboard exceeds the Live Report 10 MB size limit; no data was saved")
+    return report
 
 
 def write_report(model, output_path):

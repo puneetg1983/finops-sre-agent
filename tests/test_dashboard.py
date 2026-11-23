@@ -4,6 +4,8 @@ import copy
 import importlib.util
 import re
 import xml.etree.ElementTree as ET
+from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -44,6 +46,158 @@ def build(sources=None, **context):
 
 def tab(model, key):
     return next(row for row in model["tabs"] if row["id"] == key)
+
+
+def history_fixture():
+    history_start = (date.fromisoformat(WINDOW[1]) - timedelta(days=89)).isoformat()
+    history_window = [history_start, WINDOW[1]]
+    raw = [
+        {"date": history_start, "resourceId": SCOPE + "/providers/Microsoft.Compute/virtualMachines/old",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": "Virtual Machines",
+         "resourceLocation": "East US", "chargeType": "Usage", "cost": Decimal("100.005")},
+        {"date": WINDOW[0], "resourceId": SCOPE + "/providers/Microsoft.Compute/virtualMachines/new",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": "Virtual Machines",
+         "resourceLocation": "East US", "chargeType": "Usage", "cost": Decimal("1.005")},
+        {"date": WINDOW[1], "resourceId": SCOPE + "/providers/Microsoft.Storage/storageAccounts/data",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": "Storage",
+         "resourceLocation": "West Europe", "chargeType": "Usage", "cost": Decimal("2.005")},
+        {"date": WINDOW[1], "resourceId": SCOPE + "/providers/Microsoft.Storage/storageAccounts/data",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": "Storage",
+         "resourceLocation": "West Europe", "chargeType": "Usage", "cost": Decimal("-0.004")},
+    ]
+    overview = {
+        "total_usd": Decimal("3.006"),
+        "daily": [{"date": WINDOW[0], "cost_usd": Decimal("1.005")},
+                  {"date": WINDOW[1], "cost_usd": Decimal("2.001")}],
+        "by_service": [{"service": "Storage", "cost_usd": Decimal("2.001")},
+                       {"service": "Virtual Machines", "cost_usd": Decimal("1.005")}],
+        "by_resource_group": [{"resource_group": "managed", "cost_usd": Decimal("3.006")}],
+    }
+    recent = dashboard.slice_daily_cost_rows(raw, WINDOW)
+    sources = {"overview": envelope(overview), "explorer": envelope(dashboard.build_explorer_rows(recent))}
+    history = {
+        "window": history_window,
+        "overview": envelope(copy.deepcopy(raw), window=history_window),
+        "explorer": envelope(copy.deepcopy(raw), window=history_window),
+    }
+    return sources, history
+
+
+def test_cost_history_keeps_30_day_default_and_records_for_custom_dates():
+    sources, history = history_fixture()
+    model = build(sources, cost_history=history)
+    assert model["costHistory"]["window"] == history["window"]
+    assert model["costHistory"]["scale"] == 3
+    records = model["costHistory"]["explorer"]
+    assert len(records) == 3
+    assert sum(record["active"] for record in records) == 2
+    assert any([0, "100005"] in record["series"] and not record["active"] for record in records)
+    assert tab(model, "overview")["metrics"][0]["value"] == "$3.01"
+    output = renderer.render_report(model)
+    assert 'id="history-range"' in output and "Last 90 days" in output and "Custom dates" in output
+    assert 'data-period-present="false"' in output
+    assert 'class="period-inactive" hidden' in output
+    assert "Daily UTC dates" in output and "Other sections retain their own source periods" in output
+    assert "connect-src 'none'" in output and "fetch(" not in output
+
+
+def test_cost_history_rejects_mismatched_or_undated_sources():
+    sources, history = history_fixture()
+    history["overview"]["data"][0]["date"] = "2026-02-30"
+    with pytest.raises(ValueError, match="UTC date"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    history["explorer"]["scope_summary"] = ["/subscriptions/other"]
+    with pytest.raises(ValueError, match="scope_summary"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    history["explorer"]["data"][-1]["cost"] = Decimal("5")
+    with pytest.raises(ValueError, match="explorer does not match"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    history["window"][0] = WINDOW[0]
+    with pytest.raises(ValueError, match="90 inclusive days"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    history["overview"].pop("data")
+    with pytest.raises(ValueError, match="data must be an array"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    sources["explorer"]["window"] = history["window"]
+    with pytest.raises(ValueError, match="30-day dashboard window"):
+        build(sources, cost_history=history)
+    sources, history = history_fixture()
+    sources["overview"]["data"]["by_service"][0]["cost_usd"] = Decimal("1.50")
+    with pytest.raises(ValueError, match="overview breakdowns"):
+        build(sources, cost_history=history)
+
+
+def test_unavailable_cost_history_is_explicit_and_not_a_fake_90_day_view():
+    model = build(cost_history={"status": "unavailable", "reason": "History query was denied."})
+    output = renderer.render_report(model)
+    assert "90-day history unavailable: History query was denied." in output
+    assert '<option value="90" disabled>' in output
+    assert 'id="cost-history-data"' not in output
+    with pytest.raises(ValueError, match="requires a reason"):
+        build(cost_history={"status": "unavailable"})
+    with pytest.raises(ValueError, match="requires a 30-day"):
+        dashboard.build_dashboard_model(
+            {}, refreshed_at=NOW, scope_summary=[SCOPE], window=["2026-11-01", "2026-11-16"],
+            cost_history={"status": "unavailable", "reason": "History query was denied."},
+        )
+
+
+def test_cost_history_preserves_partial_source_warning_and_escapes_historical_names():
+    sources, history = history_fixture()
+    hostile = "</script><img src=x onerror=alert(1)>"
+    history["overview"]["data"][0]["serviceName"] = hostile
+    history["explorer"]["data"][0]["resourceId"] += hostile
+    for key in ("overview", "explorer"):
+        sources[key]["status"] = history[key]["status"] = "partial"
+        sources[key]["reason"] = history[key]["reason"] = "Some charges could not be attributed."
+    model = build(sources, cost_history=history)
+    output = renderer.render_report(model)
+    assert tab(model, "overview")["status"] == "partial"
+    assert "Some charges could not be attributed." in output
+    assert hostile not in output
+    assert "\\u003c/script\\u003e" in output
+
+
+def test_daily_cost_slicing_is_inclusive_and_rejects_missing_dates():
+    rows = [{"date": "2026-10-17"}, {"date": WINDOW[0]}, {"date": WINDOW[1]},
+            {"date": "2026-11-17"}]
+    assert dashboard.slice_daily_cost_rows(rows, WINDOW) == rows[1:3]
+    with pytest.raises(ValueError, match="UTC date"):
+        dashboard.slice_daily_cost_rows([{}], WINDOW)
+
+
+def test_sliced_query_recomputes_scope_coverage_instead_of_using_90_day_totals():
+    rows = [
+        {"date": "2026-09-01", "cost": Decimal("99"), "queryScope": SCOPE},
+        {"date": WINDOW[0], "cost": Decimal("1.005"), "queryScope": SCOPE},
+        {"date": WINDOW[1], "cost": Decimal("-0.005"), "queryScope": SCOPE},
+    ]
+    prepared = {
+        "included_rows": rows,
+        "excluded_rows": [{"date": WINDOW[1], "cost": 2, "queryScope": SCOPE}],
+        "unattributed_rows": [],
+        "partial": False,
+        "warnings": [],
+        "scope_coverage": [{"scope": SCOPE, "status": "complete", "included": 3,
+                            "excluded": 1, "unattributed": 0, "cost_usd": Decimal("100"),
+                            "detail": "Original source."}],
+    }
+    recent = dashboard.slice_daily_cost_query(prepared, WINDOW)
+    coverage = recent["scope_coverage"][0]
+    assert coverage["included"] == 2 and coverage["excluded"] == 1
+    assert coverage["cost_usd"] == Decimal("1")
+    assert "Original source." in coverage["detail"]
+    assert prepared["scope_coverage"][0]["cost_usd"] == Decimal("100")
+    without_scope = copy.deepcopy(prepared)
+    del without_scope["included_rows"][1]["queryScope"]
+    unknown = dashboard.slice_daily_cost_query(without_scope, WINDOW)["scope_coverage"][0]
+    assert unknown["included"] is None and unknown["cost_usd"] is None
+    assert "unavailable" in unknown["detail"]
 
 
 def test_consolidation_has_one_title_all_tabs_and_honest_missing_sources():
@@ -127,13 +281,22 @@ def test_explorer_retains_unknown_charges_and_uses_decimal_aggregation():
         {"resourceId": "RESOURCE", "cost": .1}, {"resourceId": "resource", "cost": .2},
         {"cost": 2},
     ])
-    assert sum(row["cost_usd"] for row in rows) == 2.3
+    assert sum(row["cost_usd"] for row in rows) == Decimal("2.3")
     assert rows[0]["resourceId"] == "(unknown)"
-    assert rows[1]["cost_usd"] == .3
+    assert rows[1]["cost_usd"] == Decimal("0.3")
+    assert rows[1]["resourceId"] == "RESOURCE"
     model = build({"explorer": envelope(rows)})
     assert tab(model, "explorer")["sections"][0]["rows"][0][-1] == "$2.00"
     with pytest.raises(ValueError, match="finite"):
         dashboard.build_explorer_rows([{"cost": float("nan")}])
+
+
+def test_oversized_dashboard_fails_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(renderer, "_LIVE_REPORT_MAX_BYTES", 5000)
+    target = tmp_path / "dashboard.html"
+    with pytest.raises(ValueError, match="10 MB size limit"):
+        renderer.write_report(build(), target)
+    assert not target.exists()
 
 
 def test_commitment_ratios_zero_denominators_and_estimates_are_not_summed():

@@ -14,6 +14,12 @@ no external scripts or network dependencies. Product artwork has separate terms;
 Source gaps retain their own visible tab and reason. Never replace a failed analysis with a
 healthy zero. All report types use the shared light/dark theme.
 
+Overview and Cost explorer default to 30 inclusive UTC days and can use a preloaded 90-day
+history or custom dates when both daily, scope-filtered cost queries completed. Other sections
+retain their native periods. Follow DASHBOARD.md for the history envelopes and fail explicitly
+if history is incomplete or exceeds the Live Report 10 MB limit; never silently truncate it.
+Opening the saved report makes no Azure calls.
+
 Use this utility after a FinOps analysis helper has produced structured results. Build a report
 model with the matching adapter in `models.py`, call `render_report` or `write_report` from
 `render.py`, then pass the output path to `SaveReport` with `allowedTools: []`.

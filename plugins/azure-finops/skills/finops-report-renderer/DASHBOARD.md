@@ -26,6 +26,49 @@ for reduced-motion preferences, and printing cancels animation to show complete 
 This is presentation only: it does not fetch fresh costs or change the saved snapshot.
 Browsers without animation support, and no-JavaScript views, retain complete static charts.
 
+The default is the saved snapshot's most recent **30 inclusive UTC days**. When the scheduled
+90-day history is complete, the date control offers **Last 90 days** and a custom inclusive
+date range within that saved window. It updates **Overview and Cost explorer only**; budgets,
+recommendations and other sections keep their own source periods. There is no hourly view,
+browser-side Azure query or live refresh. Today's costs can still be incomplete. Without
+JavaScript, the original 30-day snapshot remains readable. Scope-coverage counts and costs
+refer to the default 30-day window, even while another range is selected.
+
+The scheduled task retrieves two independent Daily query shapes over the same 90-day boundary:
+`ResourceGroupName,ServiceName` for Overview and
+`ResourceId,ServiceName,ResourceLocation,ChargeType` for Cost explorer. It filters each to
+the confirmed effective scope before inclusion. These overlapping shapes are never added together.
+`slice_daily_cost_query(prepared, [start, end])` creates the 30-day rows and default-period
+coverage for the existing analyses. Where the source cannot attribute coverage counts to a
+specific query scope, the counts are shown as unavailable rather than copied from 90 days.
+The history is disabled with an explicit reason if either retrieval is incomplete or cannot
+fit in the Live Report's 10 MB limit; it is never silently truncated.
+
+```python
+history_window = ["2026-08-19", "2026-11-16"]
+cost_history = {
+    "window": history_window,
+    "overview": {**sources["overview"], "window": history_window,
+                 "data": prepared_daily_overview["included_rows"]},
+    "explorer": {**sources["explorer"], "window": history_window,
+                 "data": prepared_daily_resource["included_rows"]},
+}
+# The two source envelopes above must describe the 30-day slice of these same rows.
+model = build_dashboard_model(
+    sources, refreshed_at="2026-11-16T22:30:00Z",
+    scope_summary=["/subscriptions/example/resourceGroups/managed"],
+    window=["2026-10-18", "2026-11-16"], cost_history=cost_history,
+)
+# Or use cost_history={"status": "unavailable", "reason": "History query was incomplete."}.
+```
+
+History envelopes must have the same source, status, timestamp and scope summary as their
+corresponding 30-day source. Each daily row requires a valid UTC `date` and finite `cost`;
+the explorer also retains resource, subscription, resource group, service, region and charge
+type. The builder checks that the default history slice matches the supplied totals, daily
+points, breakdowns and resource rows. Financial aggregation preserves decimal precision and
+signed credits; displayed resource breakdowns sum cent-rounded records.
+
 Cost explorer uses linked service bars and a region pie chart above a compact resource table.
 Pie slices and region legend buttons filter the resource list; the legend shows amounts and
 percentages. Chart panels grow with their contents rather than using internal scrollbars.

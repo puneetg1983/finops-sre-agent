@@ -342,3 +342,14 @@ def test_cost_skills_retrieve_through_arm_mcp_with_disclosed_fallback():
 
     preamble = (TASKS / "prompts" / "_managed-scope.txt").read_text()
     assert "*_query_costs" in preamble and "Never call an ARM MCP write tool" in preamble
+
+
+def test_dashboard_task_requests_two_scoped_daily_histories_and_30_day_fallback():
+    prompt = (TASKS / "prompts" / "dashboard-report.txt").read_text()
+    assert 'group_by=["ResourceGroupName", "ServiceName"]' in prompt
+    assert 'group_by=["ResourceId", "ServiceName", "ResourceLocation", "ChargeType"]' in prompt
+    assert 'granularity="Daily"' in prompt and 'as_of=end' in prompt
+    assert "slice_daily_cost_query" in prompt
+    assert "scope-filtered included_rows" in prompt
+    assert 'cost_history={"status":"unavailable","reason":' in prompt
+    assert "never truncate rows" in prompt
