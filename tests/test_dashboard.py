@@ -348,12 +348,13 @@ def test_explorer_dropdowns_keep_all_dimensions_and_escape_options():
          "serviceName": "Storage", "resourceLocation": "West Europe", "cost_usd": 1},
     ]
     output = renderer._resource_browser(tab(build({"explorer": envelope(rows)}), "explorer")["sections"][0])
-    assert re.findall(r'data-filter="([^"]+)" disabled>', output) == ["subscription", "type", "d1"]
-    assert output.count('<option value="">All</option>') == 3
+    assert re.findall(r'<details class="resource-filter" data-filter="([^"]+)">', output) == ["subscription", "type", "d1"]
+    assert output.count('<strong class="filter-selection">All</strong>') == 3
     assert output.count('data-filter-all=') == 3
     assert 'data-subscription="sub&lt;one&gt;" data-type="Virtual machines"' in output
-    assert '<option value="sub&lt;one&gt;">sub&lt;one&gt;</option>' in output
-    assert '<option value="(unknown)">(unknown)</option>' in output
+    assert 'data-filter-option value="sub&lt;one&gt;" disabled><span>sub&lt;one&gt;</span>' in output
+    assert 'data-filter-option value="(unknown)" disabled><span>(unknown)</span>' in output
+    assert '<fieldset><legend class="sr-only">Subscription</legend>' in output
     assert '<strong>$3.00 · 75.0%</strong>' in output
     assert 'data-visualization="region-pie"' in output
 
@@ -413,6 +414,16 @@ def test_top_services_renders_signed_horizontal_bars_and_preserves_data_table():
     assert 'class="workspace-identity"' in output
     assert '<h1>FinOps: Dashboard</h1>' in output
     assert 'Powered by Azure SRE Agent' in output
+
+
+def test_service_colors_stay_consistent_between_overview_costs_and_resource_types():
+    overview = renderer._chart_tones(["Virtual Machines", "Storage", "Other services"])
+    explorer = renderer._chart_tones(["App Service", "Storage", "Virtual Machines"])
+    savings = renderer._chart_tones(["Storage accounts", "Virtual machines", "App Service plans"])
+    assert overview["Virtual Machines"] == explorer["Virtual Machines"] == savings["Virtual machines"]
+    assert overview["Storage"] == explorer["Storage"] == savings["Storage accounts"]
+    assert explorer["App Service"] == savings["App Service plans"]
+    assert len({explorer[name] for name in explorer}) == 3
 
 
 def test_managed_dashboard_uses_live_changes_and_rejects_any_fixed_override():

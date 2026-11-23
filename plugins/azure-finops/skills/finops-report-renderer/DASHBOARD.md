@@ -13,14 +13,30 @@ Azure service symbols and an expandable data table. The heading retains **FinOps
 with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
 authenticated SRE Agent portal or a claim of Microsoft endorsement.
 
+Dashboard charts use an Azure-style blue-led categorical palette and
+[Microsoft Fluent charting categorical/semantic colors](https://github.com/microsoft/fluentui/blob/master/packages/charts/react-charting/src/utilities/colors.ts).
+Palette tokens are scoped to the dashboard, including light/dark metric status colors;
+common services retain the same color across Overview, Cost explorer and resource-type
+breakdowns. Official product artwork keeps its original colors.
+
+Charts draw in once when first visible during each dashboard opening: bars grow, trend lines
+trace, and regional pie slices fade into place. Hidden tabs and below-the-fold charts wait until
+viewed. Filtering and revisiting a chart do not replay the entrance animation. Motion is skipped
+for reduced-motion preferences, and printing cancels animation to show complete plots.
+This is presentation only: it does not fetch fresh costs or change the saved snapshot.
+Browsers without animation support, and no-JavaScript views, retain complete static charts.
+
 Cost explorer uses linked service bars and a region pie chart above a compact resource table.
 Pie slices and region legend buttons filter the resource list; the legend shows amounts and
 percentages. Chart panels grow with their contents rather than using internal scrollbars.
 Regional totals containing negative credits use signed bars instead of misleading pie shares;
 zero or empty totals show an explicit no-cost message. Region colors stay stable while filtering.
-At the top of Cost explorer, Subscription, Resource type and Region dropdowns default to **All**.
-Choose any combination to filter the charts and resource list together; each adjacent All button
-clears just that dimension. Pie/legend selection and the Region dropdown share the same selection.
+At the top of Cost explorer, compact Subscription, Resource type and Region dropdowns default to
+**All** and show `(1 selected)`, `(2 selected)`, etc. for explicit choices. They support multiple
+checkbox selections: choices within a dropdown are combined with OR; different dropdowns combine
+with AND. Each dropdown's All button clears just that dimension; removing its last explicit
+selection also restores All. Escape or clicking outside closes the dropdown. Pie/legend clicks
+narrow Region to one choice, and selecting it again restores All.
 Resource type is derived from the ARM resource ID (including nested and extension resources);
 unidentifiable types remain `(unknown)`, not guessed from a service name.
 Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines

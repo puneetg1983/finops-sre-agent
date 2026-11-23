@@ -66,15 +66,69 @@ _DASHBOARD_SCRIPT = """
   const sectionSelect = document.getElementById('section-select');
   const money = cents => (cents / 100).toLocaleString('en-US', {style: 'currency', currency: 'USD'});
   const browsers = new Map();
+  const chartAnimations = new Set();
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let printing = false;
+  function stopChartAnimations() {
+    chartAnimations.forEach(animation => animation.cancel());
+    chartAnimations.clear();
+  }
+  reducedMotion.addEventListener('change', event => {
+    if (event.matches) stopChartAnimations();
+  });
+  function animateChart(chart) {
+    if (reducedMotion.matches) return;
+    const play = (element, frames, duration = 650, delay = 0) => {
+      const animation = element.animate(frames, {
+        duration, delay, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'backwards'
+      });
+      chartAnimations.add(animation);
+      animation.onfinish = animation.oncancel = () => chartAnimations.delete(animation);
+    };
+    chart.querySelectorAll('meter').forEach((meter, index) => {
+      play(meter, {transform: ['scaleX(0)', 'scaleX(1)'],
+        transformOrigin: ['left center', 'left center']}, 650, Math.min(index, 8) * 40);
+    });
+    chart.querySelectorAll('polyline').forEach(line => {
+      const length = line.getTotalLength();
+      if (length) play(line, {
+        strokeDasharray: [String(length), String(length)], strokeDashoffset: [length, 0]
+      }, 900);
+    });
+    const points = [...chart.querySelectorAll('figure svg circle, figure svg rect')];
+    points.forEach((point, index) => {
+      play(point, {opacity: [0, 1]}, 250, index / Math.max(1, points.length - 1) * 650);
+    });
+    chart.querySelectorAll('.region-pie').forEach(pie => {
+      play(pie, {opacity: [0, 1], transform: ['scale(.94)', 'scale(1)'],
+        transformOrigin: ['center', 'center']});
+      pie.querySelectorAll('.region-slice').forEach((slice, index) => {
+        play(slice, {opacity: [0, 1]}, 400, Math.min(index, 6) * 60);
+      });
+    });
+  }
   document.querySelectorAll('.resource-browser').forEach(browser => {
-    const state = {selected: new Map(), rows: [...browser.querySelectorAll('tbody tr')]};
+    const state = {selected: new Map(), tones: new Map(), rows: [...browser.querySelectorAll('tbody tr')]};
     browsers.set(browser, state);
-    browser.querySelectorAll('select[data-filter]').forEach(select => {
-      select.disabled = false;
-      select.addEventListener('change', () => {
-        if (select.value) state.selected.set(select.dataset.filter, select.value);
-        else state.selected.delete(select.dataset.filter);
+    browser.querySelectorAll('.resource-filter').forEach(dropdown => {
+      dropdown.querySelectorAll('input').forEach(input => { input.disabled = false; });
+      dropdown.addEventListener('change', event => {
+        const input = event.target.closest('input[data-filter-option]');
+        if (!input) return;
+        const key = dropdown.dataset.filter;
+        const values = new Set(state.selected.get(key) || []);
+        if (input.checked) values.add(input.value);
+        else values.delete(input.value);
+        if (values.size) state.selected.set(key, values);
+        else state.selected.delete(key);
         filter();
+      });
+      dropdown.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          dropdown.open = false;
+          dropdown.querySelector('summary').focus();
+        }
       });
     });
     browser.querySelectorAll('[data-filter-all]').forEach(button => {
@@ -84,12 +138,16 @@ _DASHBOARD_SCRIPT = """
       });
     });
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
+      state.tones.set(chart.dataset.dimension, new Map(
+        [...chart.querySelectorAll('button[data-value]')].map(button => [button.dataset.value, button.dataset.tone])
+      ));
       chart.addEventListener('click', event => {
         const button = event.target.closest('[data-value]');
         if (!button) return;
         const key = chart.dataset.dimension;
-        if (state.selected.get(key) === button.dataset.value) state.selected.delete(key);
-        else state.selected.set(key, button.dataset.value);
+        const selected = state.selected.get(key);
+        if (selected?.size === 1 && selected.has(button.dataset.value)) state.selected.delete(key);
+        else state.selected.set(key, new Set([button.dataset.value]));
         filter();
         [...chart.querySelectorAll('button')].find(item => item.dataset.value === button.dataset.value)?.focus();
       });
@@ -134,9 +192,9 @@ _DASHBOARD_SCRIPT = """
       path.setAttribute('d', (share === 1 ? 'M ' : 'M 110 110 L ') + point(start) +
         ' A 100 100 0 0 1 ' + point(start + share / 2) +
         ' A 100 100 0 0 1 ' + point(start + share) + ' Z');
-      path.setAttribute('class', 'region-slice region-tone-' + tones.get(value));
+      path.setAttribute('class', 'region-slice chart-tone-' + tones.get(value));
       path.dataset.value = value;
-      path.dataset.selected = String(selected === value);
+      path.dataset.selected = String(selected?.has(value) || false);
       const title = document.createElementNS(ns, 'title');
       title.textContent = value + ': ' + money(group.total) + ' (' + (share * 100).toFixed(1) + '%)';
       path.append(title);
@@ -148,15 +206,20 @@ _DASHBOARD_SCRIPT = """
   }
   function updateBrowser(browser, term) {
     const state = browsers.get(browser);
-    browser.querySelectorAll('select[data-filter]').forEach(select => {
-      select.value = state.selected.get(select.dataset.filter) || '';
-      select.title = select.value || 'All';
+    browser.querySelectorAll('.resource-filter').forEach(dropdown => {
+      const selected = state.selected.get(dropdown.dataset.filter);
+      dropdown.querySelector('.filter-selection').textContent = selected ? '(' + selected.size + ' selected)' : 'All';
+      dropdown.querySelector('summary').title = selected ? [...selected].join(', ') : 'All';
+      dropdown.querySelectorAll('input[data-filter-option]').forEach(input => {
+        input.checked = selected?.has(input.value) || false;
+      });
     });
     browser.querySelectorAll('[data-filter-all]').forEach(button => {
-      button.disabled = !state.selected.has(button.dataset.filterAll);
+      button.disabled = false;
+      button.setAttribute('aria-pressed', String(!state.selected.has(button.dataset.filterAll)));
     });
     const matches = (row, except) => row.dataset.search.toLocaleLowerCase().includes(term) &&
-      [...state.selected].every(([key, value]) => key === except || row.dataset[key] === value);
+      [...state.selected].every(([key, values]) => key === except || values.has(row.dataset[key]));
     let total = 0, visible = 0, quantified = 0;
     state.rows.forEach(row => {
       row.hidden = !matches(row);
@@ -168,7 +231,7 @@ _DASHBOARD_SCRIPT = """
     const totalLabel = visible && !quantified ? 'No quantified amount' : money(total);
     browser.querySelector('.breakdown-result').textContent =
       visible + ' records · ' + totalLabel + (quantified < visible ? ' · ' + (visible - quantified) + ' unquantified' : '') +
-      (state.selected.size ? ' · ' + [...state.selected.values()].join(' / ') : ' · All resources');
+      (state.selected.size ? ' · ' + [...state.selected.values()].map(values => [...values].join(', ')).join(' / ') : ' · All resources');
     browser.querySelector('.clear-breakdown').disabled = state.selected.size === 0;
     browser.querySelector('.breakdown-empty').hidden = visible !== 0;
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
@@ -187,14 +250,15 @@ _DASHBOARD_SCRIPT = """
       const list = chart.querySelector('.breakdown-bars');
       list.replaceChildren();
       const region = chart.dataset.visualization === 'region-pie';
-      const tones = region ? new Map([...new Set(state.rows.map(row => row.dataset[key]))].sort()
-        .map((value, index) => [value, index % 8])) : null;
+      const tones = state.tones.get(key);
       const pieTotal = region ? drawRegionPie(chart, entries, tones, state.selected.get(key)) : 0;
       entries.forEach(([value, group]) => {
         const button = document.createElement('button');
         button.type = 'button';
+        button.className = 'chart-tone-' + tones.get(value);
+        button.dataset.tone = tones.get(value);
         button.dataset.value = value;
-        button.setAttribute('aria-pressed', String(state.selected.get(key) === value));
+        button.setAttribute('aria-pressed', String(state.selected.get(key)?.has(value) || false));
         const name = document.createElement('span');
         name.className = 'breakdown-name';
         name.textContent = value;
@@ -209,7 +273,7 @@ _DASHBOARD_SCRIPT = """
         meter.setAttribute('aria-label', value + ' magnitude in USD cents');
         if (pieTotal) {
           const swatch = document.createElement('span');
-          swatch.className = 'region-swatch region-tone-' + tones.get(value);
+          swatch.className = 'region-swatch chart-tone-' + tones.get(value);
           swatch.setAttribute('aria-hidden', 'true');
           button.append(swatch, name, amount, detail);
         } else button.append(name, amount, meter, detail);
@@ -231,6 +295,7 @@ _DASHBOARD_SCRIPT = """
     count.textContent = term ? matches + ' matching rows in this section' : '';
   }
   function select(index, focus) {
+    stopChartAnimations();
     tabs.forEach((tab, i) => {
       const active = i === index;
       tab.setAttribute('aria-selected', String(active));
@@ -254,17 +319,36 @@ _DASHBOARD_SCRIPT = """
   });
   sectionSelect.addEventListener('change', () => select(Number(sectionSelect.value), false));
   search.addEventListener('input', filter);
+  document.addEventListener('click', event => {
+    document.querySelectorAll('.resource-filter[open]').forEach(dropdown => {
+      if (!dropdown.contains(event.target)) dropdown.open = false;
+    });
+  });
   document.getElementById('print-report').addEventListener('click', () => window.print());
   let printDetails = null;
   window.addEventListener('beforeprint', () => {
+    printing = true;
+    stopChartAnimations();
     if (printDetails !== null) return;
     printDetails = [...document.querySelectorAll('.resource-identity:not([open])')];
     printDetails.forEach(detail => { detail.open = true; });
   });
   window.addEventListener('afterprint', () => {
+    printing = false;
     printDetails?.forEach(detail => { detail.open = false; });
     printDetails = null;
   });
+  if ('IntersectionObserver' in window && Element.prototype.animate) {
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting || entry.target.closest('[role="tabpanel"]')?.hidden ||
+            printing || window.matchMedia('print').matches) return;
+        observer.unobserve(entry.target);
+        animateChart(entry.target);
+      });
+    });
+    document.querySelectorAll('.chart-panel, .service-bars, .breakdown-chart').forEach(chart => observer.observe(chart));
+  }
   select(0, false);
   document.documentElement.classList.add('dashboard-enhanced');
 })();
@@ -394,7 +478,7 @@ def _region_pie(entries, tones):
         path = (f'{"M" if share == 1 else "M 110 110 L"} {point(start)} A 100 100 0 0 1 {point(start + share / 2)} '
                 f"A 100 100 0 0 1 {point(start + share)} Z")
         paths.append(
-            f'<path class="region-slice region-tone-{tones[value]}" d="{path}" '
+            f'<path class="region-slice chart-tone-{tones[value]}" d="{path}" '
             f'data-value="{_escape(value)}" data-selected="false"><title>'
             f'{_escape(value)}: {_usd(amount)} ({share * 100:.1f}%)</title></path>'
         )
@@ -476,13 +560,13 @@ def _resource_browser(section):
     for index, (label, _) in enumerate(dimensions):
         region = not savings and index == 1
         entries = sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0]))
-        tones = {value: i % 8 for i, value in enumerate(sorted(groups[index]))}
+        tones = _chart_tones(groups[index])
         pie, pie_total = _region_pie(entries, tones) if region else ("", 0)
         maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
         bars = []
         for value, (amount, count, missing) in entries:
             indicator = (
-                f'<span class="region-swatch region-tone-{tones[value]}" aria-hidden="true"></span>'
+                f'<span class="region-swatch chart-tone-{tones[value]}" aria-hidden="true"></span>'
                 if pie_total else ""
             )
             meter = (
@@ -491,7 +575,8 @@ def _resource_browser(section):
             )
             percentage = f" · {amount / pie_total * 100:.1f}%" if pie_total else ""
             bars.append(
-                f'<button type="button" data-value="{_escape(value)}" aria-pressed="false" disabled>'
+                f'<button type="button" class="chart-tone-{tones[value]}" data-tone="{tones[value]}" '
+                f'data-value="{_escape(value)}" aria-pressed="false" disabled>'
                 f'{indicator}'
                 f'<span class="breakdown-name">{_escape(value)}</span><strong>'
                 f'{"Not quantified" if missing == count else _usd(amount)}{percentage}</strong>{meter}'
@@ -517,13 +602,16 @@ def _resource_browser(section):
         controls = []
         for key, label in (("subscription", "Subscription"), ("type", "Resource type"), ("d1", "Region")):
             options = "".join(
-                f'<option value="{_escape(value)}">{_escape(value)}</option>'
+                f'<label><input type="checkbox" data-filter-option value="{_escape(value)}" disabled>'
+                f'<span>{_escape(value)}</span></label>'
                 for value in sorted(filter_values[key])
             )
             controls.append(
-                f'<div class="resource-filter"><label><span>{label}</span>'
-                f'<select aria-label="{label}" data-filter="{key}" disabled><option value="">All</option>{options}</select></label>'
-                f'<button type="button" data-filter-all="{key}" aria-label="{label}: All" disabled>All</button></div>'
+                f'<details class="resource-filter" data-filter="{key}"><summary>'
+                f'<span class="filter-label">{label}:</span> <strong class="filter-selection">All</strong></summary>'
+                f'<div class="filter-menu"><button type="button" data-filter-all="{key}" '
+                f'aria-label="{label}: All" aria-pressed="true" disabled>All</button>'
+                f'<fieldset><legend class="sr-only">{label}</legend>{options}</fieldset></div></details>'
             )
         filter_html = '<div class="resource-filters" role="group" aria-label="Cost explorer filters">' + "".join(controls) + "</div>"
     return (
@@ -559,6 +647,16 @@ def _resource_type_label(value):
         "microsoft.sql/servers/databases": "SQL databases",
         "microsoft.containerservice/managedclusters": "Kubernetes clusters",
     }.get(value.casefold(), value or "(unknown)")
+
+
+def _chart_tones(values):
+    service_tones = {
+        "virtual machines": 0, "storage": 1, "storage accounts": 1,
+        "azure sql database": 2, "sql databases": 2, "app service": 3,
+        "app service apps": 3, "app service plans": 3, "other services": 4,
+    }
+    return {value: service_tones.get(value.casefold(), index % 8)
+            for index, value in enumerate(sorted(set(values)))}
 
 
 def _resource_type_from_id(identity):
@@ -601,8 +699,9 @@ def _service_bars(section):
     values = [(str(row[0]), int(Decimal(row[1].replace("$", "").replace(",", "")) * 100))
               for row in section["rows"]]
     maximum = max([abs(value) for _, value in values] + [1])
+    tones = _chart_tones(name for name, _ in values)
     bars = "".join(
-        f'<li><span class="service-symbol">{_icon(_service_icon(name))}</span>'
+        f'<li class="chart-tone-{tones[name]}"><span class="service-symbol">{_icon(_service_icon(name))}</span>'
         f'<span class="service-label">{_escape(name)}</span><strong>{_usd(value)}</strong>'
         f'<meter min="0" max="{maximum}" value="{abs(value)}" aria-label="{_escape(name)} cost magnitude in USD cents"></meter></li>'
         for name, value in values
