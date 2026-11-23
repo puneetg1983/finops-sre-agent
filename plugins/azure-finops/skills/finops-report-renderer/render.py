@@ -3,6 +3,7 @@
 import html
 import json
 import math
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -28,7 +29,7 @@ _STATUS_LABELS = {
 }
 _TAB_ICONS = {
     "overview": "home",
-    "explorer": "data-histogram",
+    "explorer": "product-cost-management",
     "allocation": "people-team",
     "billing": "receipt",
     "budgets": "wallet",
@@ -63,11 +64,89 @@ _DASHBOARD_SCRIPT = """
   const search = document.getElementById('table-search');
   const count = document.getElementById('search-count');
   const sectionSelect = document.getElementById('section-select');
+  const money = cents => (cents / 100).toLocaleString('en-US', {style: 'currency', currency: 'USD'});
+  const browsers = new Map();
+  document.querySelectorAll('.resource-browser').forEach(browser => {
+    const state = {selected: new Map(), rows: [...browser.querySelectorAll('tbody tr')]};
+    browsers.set(browser, state);
+    browser.querySelectorAll('[data-dimension]').forEach(chart => {
+      chart.addEventListener('click', event => {
+        const button = event.target.closest('button[data-value]');
+        if (!button) return;
+        const key = chart.dataset.dimension;
+        if (state.selected.get(key) === button.dataset.value) state.selected.delete(key);
+        else state.selected.set(key, button.dataset.value);
+        filter();
+        [...chart.querySelectorAll('button')].find(item => item.dataset.value === button.dataset.value)?.focus();
+      });
+    });
+    browser.querySelector('.clear-breakdown').addEventListener('click', () => {
+      state.selected.clear();
+      filter();
+    });
+  });
+  function updateBrowser(browser, term) {
+    const state = browsers.get(browser);
+    const matches = (row, except) => row.dataset.search.toLocaleLowerCase().includes(term) &&
+      [...state.selected].every(([key, value]) => key === except || row.dataset[key] === value);
+    let total = 0, visible = 0, quantified = 0;
+    state.rows.forEach(row => {
+      row.hidden = !matches(row);
+      if (!row.hidden) {
+        visible++;
+        if (row.dataset.amount !== '') { total += Number(row.dataset.amount); quantified++; }
+      }
+    });
+    const totalLabel = visible && !quantified ? 'No quantified amount' : money(total);
+    browser.querySelector('.breakdown-result').textContent =
+      visible + ' records · ' + totalLabel + (quantified < visible ? ' · ' + (visible - quantified) + ' unquantified' : '') +
+      (state.selected.size ? ' · ' + [...state.selected.values()].join(' / ') : ' · All resources');
+    browser.querySelector('.clear-breakdown').disabled = state.selected.size === 0;
+    browser.querySelector('.breakdown-empty').hidden = visible !== 0;
+    browser.querySelectorAll('[data-dimension]').forEach(chart => {
+      const key = chart.dataset.dimension;
+      const groups = new Map();
+      state.rows.filter(row => matches(row, key)).forEach(row => {
+        const value = row.dataset[key];
+        const group = groups.get(value) || {total: 0, count: 0, unknown: 0};
+        group.count++;
+        if (row.dataset.amount !== '') group.total += Number(row.dataset.amount);
+        else group.unknown++;
+        groups.set(value, group);
+      });
+      const entries = [...groups].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
+      const maximum = Math.max(1, ...entries.map(([, group]) => Math.abs(group.total)));
+      const list = chart.querySelector('.breakdown-bars');
+      list.replaceChildren();
+      entries.forEach(([value, group]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.value = value;
+        button.setAttribute('aria-pressed', String(state.selected.get(key) === value));
+        const name = document.createElement('span');
+        name.className = 'breakdown-name';
+        name.textContent = value;
+        const amount = document.createElement('strong');
+        amount.textContent = group.unknown === group.count ? 'Not quantified' : money(group.total);
+        const detail = document.createElement('span');
+        detail.className = 'breakdown-meta';
+        detail.textContent = group.count + ' records' + (group.unknown ? ' · ' + group.unknown + ' unquantified' : '');
+        const meter = document.createElement('meter');
+        meter.min = 0; meter.max = maximum; meter.value = Math.abs(group.total);
+        meter.setAttribute('aria-label', value + ' magnitude in USD cents');
+        button.append(name, amount, meter, detail);
+        list.append(button);
+      });
+    });
+    return visible;
+  }
   function filter() {
     const term = search.value.toLocaleLowerCase().trim();
     let matches = 0;
     const panel = panels.find(p => !p.hidden);
+    for (const browser of panel.querySelectorAll('.resource-browser')) matches += updateBrowser(browser, term);
     for (const row of panel.querySelectorAll('tbody tr')) {
+      if (row.closest('.resource-browser')) continue;
       row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
       if (!row.hidden) matches++;
     }
@@ -98,6 +177,16 @@ _DASHBOARD_SCRIPT = """
   sectionSelect.addEventListener('change', () => select(Number(sectionSelect.value), false));
   search.addEventListener('input', filter);
   document.getElementById('print-report').addEventListener('click', () => window.print());
+  let printDetails = null;
+  window.addEventListener('beforeprint', () => {
+    if (printDetails !== null) return;
+    printDetails = [...document.querySelectorAll('.resource-identity:not([open])')];
+    printDetails.forEach(detail => { detail.open = true; });
+  });
+  window.addEventListener('afterprint', () => {
+    printDetails?.forEach(detail => { detail.open = false; });
+    printDetails = null;
+  });
   select(0, false);
   document.documentElement.classList.add('dashboard-enhanced');
 })();
@@ -109,9 +198,10 @@ def _escape(value):
 
 
 def _icon(name):
+    symbol = name if name.startswith("product-") else "fluent-" + name
     return (
         '<svg class="icon" aria-hidden="true" focusable="false">'
-        f'<use href="#fluent-{name}"></use></svg>'
+        f'<use href="#{symbol}"></use></svg>'
     )
 
 
@@ -174,6 +264,12 @@ def _sections(model, heading_level=2):
                 "<tr>" + "".join(f"<td>{_escape(cell)}</td>" for cell in row) + "</tr>"
             )
 
+        if section.get("breakdown") and heading_level > 2:
+            rendered.append(_resource_browser(section))
+            continue
+        if section.get("visualization") == "service-bars" and heading_level > 2 and rows:
+            rendered.append(_service_bars(section))
+            continue
         if body:
             dashboard_table = heading_level > 2
             table_hint = (
@@ -200,6 +296,160 @@ def _sections(model, heading_level=2):
             f"{_escape(description)}</p>{content}</section>"
         )
     return "".join(rendered)
+
+
+def _resource_browser(section):
+    """Render compact identities and faceted, exact-cent breakdowns from adapter tables."""
+    config = section["breakdown"]
+    dimensions = config["dimensions"]
+    savings = config["kind"] == "savings"
+    groups = [{}, {}]
+    body = []
+    total = 0
+    unknown = 0
+    rows = section["rows"]
+    if not savings:
+        rows = sorted(rows, key=lambda row: -Decimal(row[config["amount"]].replace("$", "").replace(",", "")))
+    for row in rows:
+        amount = row[config["amount"]]
+        cents = None if amount == "\u2014" else int(Decimal(amount.replace("$", "").replace(",", "")) * 100)
+        if cents is None:
+            unknown += 1
+        else:
+            total += cents
+        attrs = []
+        for index, (_, column) in enumerate(dimensions):
+            value = str(row[column]).strip() or "(unknown)"
+            if savings and index == 0:
+                value = _resource_type_label(value)
+            attrs.append(f'data-d{index}="{_escape(value)}"')
+            group = groups[index].setdefault(value, [0, 0, 0])
+            group[0] += cents or 0
+            group[1] += 1
+            group[2] += cents is None
+        identity = str(row[0])
+        name = identity.rstrip("/").rsplit("/", 1)[-1] or "(unknown)"
+        segments = identity.split("/")
+        group_name = next((segments[i + 1] for i, part in enumerate(segments[:-1])
+                           if part.lower() == "resourcegroups"), "(unknown)")
+        details = "".join(
+            f"<dt>{_escape(label)}</dt><dd>{_escape(value)}</dd>"
+            for label, value in zip(section["columns"], row)
+        )
+        identity_html = (
+            f'<details class="resource-identity"><summary title="{_escape(identity)}">'
+            f'{_icon(_service_icon(row[1] if savings else row[3]))}'
+            f'<span class="resource-name">{_escape(name)}</span></summary>'
+            f'<dl>{details}</dl></details><span class="resource-context">{_escape(group_name if savings else row[2])}</span>'
+        )
+        cells = (
+            [identity_html, _escape(_resource_type_label(row[1])), _escape(row[4]), _escape(row[6]), _escape(row[7])]
+            if savings else
+            [identity_html, _escape(row[3]), _escape(row[4]), _escape(row[6])]
+        )
+        body.append(
+            f'<tr {" ".join(attrs)} data-amount="{cents if cents is not None else ""}" '
+            f'data-search="{_escape(" ".join(str(cell) for cell in row))}">'
+            + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+        )
+    charts = []
+    for index, (label, _) in enumerate(dimensions):
+        maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
+        bars = []
+        for value, (amount, count, missing) in sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0])):
+            bars.append(
+                f'<button type="button" data-value="{_escape(value)}" aria-pressed="false" disabled>'
+                f'<span class="breakdown-name">{_escape(value)}</span><strong>'
+                f'{"Not quantified" if missing == count else _usd(amount)}</strong>'
+                f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
+                f'<span class="breakdown-meta">{count} records'
+                + (f" · {missing} unquantified" if missing else "") + "</span></button>"
+            )
+        charts.append(
+            f'<div class="breakdown-chart" data-dimension="d{index}"><h4>By {_escape(label.lower())}</h4>'
+            f'<div class="breakdown-bars">{"".join(bars)}</div></div>'
+        )
+    columns = ["Resource name", "Resource type", "Recommended action", "Monthly savings", "Validation"] if savings else [
+        "Resource name", "Service", "Region", "Cost (USD)",
+    ]
+    return (
+        f'<section class="resource-browser"><h3>{_escape(section["title"])}</h3>'
+        f'<p class="section-description">{_escape(section["description"])}</p>'
+        '<p class="breakdown-instructions">Select a bar to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
+        f'<div class="breakdown-grid">{"".join(charts)}</div>'
+        '<div class="breakdown-toolbar"><p class="breakdown-result" role="status">'
+        f'{len(body)} records · {"No quantified amount" if body and unknown == len(body) else _usd(total)}'
+        + (f" · {unknown} unquantified" if unknown else "") +
+        '</p><button type="button" class="clear-breakdown" disabled>Clear filters</button></div>'
+        f'<p class="breakdown-empty"{ " hidden" if body else ""}>No records match these filters.</p>'
+        '<p class="breakdown-print-note">Complete saved resource detail; interactive filters are not applied to print.</p>'
+        '<div class="table-wrap" role="region" tabindex="0" aria-label="' + _escape(section["title"]) + ' table">'
+        '<table class="resource-table"><thead><tr>'
+        + "".join(f'<th scope="col">{label}</th>' for label in columns)
+        + '</tr></thead><tbody>' + "".join(body) + '</tbody></table></div></section>'
+    )
+
+
+def _usd(cents):
+    return ("-" if cents < 0 else "") + f"${abs(Decimal(cents)) / 100:,.2f}"
+
+
+def _resource_type_label(value):
+    return {
+        "microsoft.compute/virtualmachines": "Virtual machines",
+        "microsoft.compute/disks": "Managed disks",
+        "microsoft.web/sites": "App Service apps",
+        "microsoft.web/serverfarms": "App Service plans",
+        "microsoft.storage/storageaccounts": "Storage accounts",
+        "microsoft.sql/servers/databases": "SQL databases",
+        "microsoft.containerservice/managedclusters": "Kubernetes clusters",
+    }.get(value.casefold(), value or "(unknown)")
+
+
+def _service_icon(value):
+    value = value.casefold()
+    if "storage" in value:
+        return "product-storage"
+    if "disk" in value:
+        return "hard-drive"
+    if value in {"azure sql database", "sql database", "microsoft.sql/servers/databases"}:
+        return "product-sql"
+    if "sql" in value or "database" in value:
+        return "database"
+    if value in {"virtual machines", "virtual machine", "microsoft.compute/virtualmachines"}:
+        return "product-virtual-machine"
+    if "compute" in value:
+        return "cloud-desktop"
+    if value in {"app service", "app service apps", "app service plans"} or value.startswith("microsoft.web/"):
+        return "product-app-service"
+    if "web" in value:
+        return "globe"
+    if "container" in value or "kubernetes" in value:
+        return "box"
+    if "openai" in value or "cognitive" in value:
+        return "brain-circuit"
+    return "cloud"
+
+
+def _service_bars(section):
+    values = [(str(row[0]), int(Decimal(row[1].replace("$", "").replace(",", "")) * 100))
+              for row in section["rows"]]
+    maximum = max([abs(value) for _, value in values] + [1])
+    bars = "".join(
+        f'<li><span class="service-symbol">{_icon(_service_icon(name))}</span>'
+        f'<span class="service-label">{_escape(name)}</span><strong>{_usd(value)}</strong>'
+        f'<meter min="0" max="{maximum}" value="{abs(value)}" aria-label="{_escape(name)} cost magnitude in USD cents"></meter></li>'
+        for name, value in values
+    )
+    table = {key: value for key, value in section.items() if key != "visualization"}
+    return (
+        f'<section class="service-chart"><div class="service-chart-heading"><h3>{_escape(section["title"])}</h3>'
+        '<span>Cost (USD)</span></div><p class="section-description">'
+        f'{_escape(section["description"])} Bars show magnitude; labels retain credits.</p>'
+        f'<ol class="service-bars" aria-label="Top services by cost">{bars}</ol>'
+        '<details class="chart-data"><summary>View service cost data</summary>'
+        + _sections({"sections": [table]}, heading_level=4) + '</details></section>'
+    )
 
 
 def _chart(model):
@@ -341,7 +591,7 @@ def _dashboard_chart(model):
     )
 
 
-def _dashboard(model):
+def _dashboard(model, intro=""):
     tabs = _list(model.get("tabs"), "tabs")
     if not tabs:
         raise ValueError("dashboard tabs must not be empty")
@@ -358,6 +608,10 @@ def _dashboard(model):
             raise ValueError("invalid dashboard tab status")
         status_label = _STATUS_LABELS[status]
         icon = _TAB_ICONS.get(key, "chart-multiple")
+        group = {"overview": "Cost analysis", "rightsizing": "Efficiency",
+                 "governance": "Operations", "coverage": "Report information"}.get(key)
+        if group:
+            buttons.append(f'<div class="nav-group" role="presentation">{group}</div>')
         buttons.append(
             f'<button type="button" role="tab" id="tab-{key}" aria-controls="panel-{key}" '
             f'aria-selected="{str(index == 0).lower()}">'
@@ -383,12 +637,14 @@ def _dashboard(model):
         )
     return (
         '<div class="dashboard-layout"><aside class="dashboard-sidebar">'
+        f'<div class="workspace-identity">{_icon("product-cost-management")}<div><strong>Financial operations</strong>'
+        '<span>Azure cost workspace</span></div></div>'
         '<div class="sidebar-heading"><span>Report sections</span>'
         f'<span class="section-count">{len(tabs)}</span></div>'
         '<div class="mobile-section-selector"><label for="section-select">Report section</label>'
         '<select id="section-select">' + "".join(options) + '</select></div>'
         '<nav role="tablist" aria-label="FinOps sections" aria-orientation="vertical">'
-        + "".join(buttons) + '</nav></aside><div class="dashboard-content">'
+        + "".join(buttons) + '</nav></aside><div class="dashboard-content">' + intro +
         '<div class="toolbar"><div class="search-control">'
         f'{_icon("search")}<label class="sr-only" for="table-search">Search table rows in this section</label>'
         '<input id="table-search" type="search" placeholder="Search rows in this section" '
@@ -398,21 +654,21 @@ def _dashboard(model):
     )
 
 
-def _dashboard_header(title, description, refreshed_at, mode, scopes):
+def _dashboard_header(title, description, refreshed_at, mode, scopes, warnings=""):
     return (
-        '<header class="dashboard-header"><div class="appbar">'
-        f'<div class="appbar-brand"><span class="brand-icon">{_icon("cloud")}</span>'
-        '<div><strong>FinOps workspace</strong><span>Azure cost visibility</span></div></div>'
-        f'<div class="appbar-context">{_icon("agents")}<span>For Azure SRE Agent</span></div>'
-        '</div><div class="page-heading"><div class="page-title">'
-        f'<p class="eyebrow">{_icon("money-calculator")}<span>Azure Cost Management</span></p>'
-        f'<h1>{_escape(title)}</h1><p class="subtitle">{_escape(description)}</p></div>'
+        '<header class="dashboard-header"><p class="workspace-breadcrumb">'
+        'Live Reports <span aria-hidden="true">/</span> Financial operations</p>'
+        '<div class="page-heading"><div class="page-title">'
+        f'<p class="eyebrow">{_icon("product-azure")}<span>Azure Cost Management</span></p>'
+        f'<h1>{_escape(title)}</h1><p class="powered-by">{_icon("product-sre-agent")}'
+        '<span>Powered by Azure SRE Agent</span></p>'
+        f'<p class="subtitle">{_escape(description)}</p></div>'
         f'<div class="refresh-card">{_icon("clock")}<div><span>Last refreshed</span>'
         f'<strong>{_escape(refreshed_at)}</strong><small>Scheduled snapshot, not real-time billing</small>'
         '</div></div></div>'
-        f'<details class="scope-details"><summary>{_icon("cloud")}'
+        f'<div class="context-disclosures"><details class="scope-details"><summary>{_icon("product-subscriptions")}'
         f'<span>Scope: <strong>{_escape(mode)}</strong></span>'
-        f'<span class="scope-action">View scopes</span></summary>{scopes}</details></header>'
+        f'<span class="scope-action">View scopes</span></summary>{scopes}</details>{warnings}</div></header>'
     )
 
 
@@ -453,11 +709,19 @@ def render_report(model):
         else '<p class="empty">No managed scope summary was supplied.</p>'
     )
     chart_markup, chart_script = ("", "") if is_dashboard else _chart(model)
-    content = _dashboard(model) if is_dashboard else (
+    content = "" if is_dashboard else (
         _metrics(model) + chart_markup + _sections(model)
     )
     stylesheet = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
-    mode = "Everything (tenant)" if model.get("scopeMode") == "everything" else "Managed resources"
+    scope_modes = {
+        "managed": "Managed resources",
+        "everything": "Everything (tenant)",
+        "subscriptions": "Selected subscriptions",
+    }
+    scope_mode = model.get("scopeMode", "managed")
+    if is_dashboard and scope_mode not in scope_modes:
+        raise ValueError("unknown dashboard scopeMode")
+    mode = scope_modes.get(scope_mode, "Managed resources")
     header_html = (
         f'<header><p class="eyebrow">Azure FinOps / Decision workspace</p><h1>{_escape(title)}</h1>'
         f'<p class="subtitle">{_escape(description)}</p><p class="refreshed">Last refreshed: '
@@ -468,7 +732,18 @@ def render_report(model):
     if is_dashboard:
         stylesheet += "\n" + Path(__file__).with_name("dashboard.css").read_text(encoding="utf-8")
         sprite = Path(__file__).with_name("fluent-icons.svg").read_text(encoding="utf-8")
-        header_html = _dashboard_header(title, description, refreshed_at, mode, scope_html)
+        sprite += Path(__file__).with_name("microsoft-product-icons.svg").read_text(encoding="utf-8")
+        intro = _dashboard_header(title, description, refreshed_at, mode, scope_html, warning_html)
+        header_html = (
+            '<div class="appbar"><div class="appbar-brand">'
+            f'<span class="brand-icon">{_icon("cloud")}</span><strong>FinOps</strong>'
+            '<span class="appbar-divider" aria-hidden="true">/</span>'
+            '<span>Cost intelligence</span></div>'
+            f'<div class="appbar-context">{_icon("clock")}<span>Scheduled snapshot</span>'
+            '<span class="snapshot-label">Saved report</span></div></div>'
+        )
+        content = _dashboard(model, intro)
+        warning_html = ""
         scope_details = ""
         body_class = ' class="dashboard"'
     csp = (

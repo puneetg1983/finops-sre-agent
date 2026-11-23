@@ -1,17 +1,39 @@
 # Consolidated dashboard contract
 
 The setup task saves **FinOps: Dashboard**, one daily-refreshed Live Report with 17 sections.
-Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, and `fluent-icons.svg`
+Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, `fluent-icons.svg`, and `microsoft-product-icons.svg`
 together. There are no third-party scripts, fonts, network calls or view-time Azure tools in
 dashboard HTML. CSP nonces are substituted by SaveReport. Without JavaScript, all sections remain
 readable; with it, tabs support keyboard navigation, the mobile section selector, table search and
 print/PDF (which prints all sections).
 
+The report uses a compact portal-inspired shell, grouped navigation, a command bar, and an
+inline scope disclosure. The overview's Top services is a ranked horizontal bar graph with
+Azure service symbols and an expandable data table. The heading retains **FinOps: Dashboard**,
+with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
+authenticated SRE Agent portal or a claim of Microsoft endorsement.
+
+Cost explorer uses linked service and region bar breakdowns above a compact resource table.
+Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines
+filters; search also filters the breakdowns and totals. Clear filters resets the bar selections,
+not the search field. Resource names expand to show full IDs and every original field.
+Unknown savings remain unquantified, not zero-valued recommendations. Bar lengths show absolute
+magnitude (including credits); signed USD labels remain authoritative. Counts refer to records,
+not unique resources. These views total the displayed, cent-rounded USD records; they do not
+deduplicate recommendations or claim that overlapping savings can all be realized.
+Without JavaScript, the complete table and initial breakdowns remain available. Print includes
+all resource rows regardless of interactive filters.
+
 The inline [Microsoft Fluent System Icons](https://github.com/microsoft/fluentui-system-icons)
 are MIT-licensed; their notice and source revision are included in `fluent-icons.svg` and the
-generated report. Cloud, money calculator, and agents symbols describe the Azure, cost, and SRE Agent contexts;
-they are not product logos. Microsoft's [Azure product artwork](https://learn.microsoft.com/en-us/azure/architecture/icons/)
-has separate usage restrictions.
+generated report. `microsoft-product-icons.svg` separately contains official Azure, Cost
+Management, subscriptions, Virtual Machine, Storage Accounts, SQL Database, App Services, and
+SRE Agent artwork, with the original colors and proportions. Sources and SHA-256 fingerprints
+are recorded in that asset. Product artwork is **not** MIT-licensed: it is included under the
+repository owner's confirmed authorization, which does not grant downstream users a license.
+Review the [Azure icon terms](https://learn.microsoft.com/en-us/azure/architecture/icons/) and
+[Microsoft brand guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks)
+before redistributing or reusing the artwork.
 
 ```python
 from dashboard import build_dashboard_model, build_explorer_rows
@@ -36,7 +58,7 @@ model = build_dashboard_model(
     sources,
     refreshed_at="2026-11-16T22:30:00Z",
     scope_summary=["/subscriptions/example/resourceGroups/managed"],
-    scope_mode="managed",  # or the setup-confirmed "everything"
+    scope_mode="managed",  # or setup-confirmed "everything" / "subscriptions"
     window=["2026-10-18", "2026-11-16"],
     scope_coverage=prepared["scope_coverage"],
     warnings=["Today's charges are still settling."],
@@ -56,6 +78,13 @@ failed data with the current time to make it look fresh.
 The dashboard builder does not discover or authorize Azure scope. Call `resolve_dashboard_scopes`
 first, then the existing query planners/filters with that boundary. These are pure functions;
 all envelopes must come from already validated, scope-filtered source data.
+
+The setup-confirmed `subscriptions` mode is labeled **Selected subscriptions**. Its scope
+summary contains the exact selected subscription ARM IDs, and covers all resources inside
+those subscriptions, not just managed resources. Setup preselects the agent's hosting
+subscription for confirmation and supports multiple subscriptions in the same tenant.
+Runtime must verify the agent/connector's access to every selected subscription before
+collecting data; the caller's subscription picker is not proof of agent access.
 
 ## Core inputs (unchanged helper outputs)
 

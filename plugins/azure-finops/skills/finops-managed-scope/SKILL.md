@@ -11,13 +11,26 @@ managed resources and makes broader interactive requests visible to the user.
 Broad Azure RBAC is not evidence that a scope is managed: managedResources remains the
 policy boundary even when the agent identity can read more.
 
-**Dashboard-only scope contract:** `finops-setup` MUST obtain an explicit **Managed resources**
-or **Everything** choice. The consolidated dashboard task persists that choice in its prompt.
+**Dashboard-only scope contract:** `finops-setup` MUST obtain an explicit **Managed resources**,
+**Everything**, or **Selected subscriptions** choice. Selected subscriptions allows one or multiple
+user-confirmed subscriptions, with the agent's hosting subscription preselected when selectable.
+The consolidated dashboard task persists that choice in its prompt.
 Only that task may call `resolve_dashboard_scopes(managed_resources, policy,
 management_group_expansions=complete_descendants, tenant_id=current_agent_tenant_id)`.
 Managed mode reads live managedResources. Everything requires one explicitly confirmed tenant
 root management group matching the agent's tenant, expanded completely on every run. Empty,
 missing or incomplete hierarchy discovery fails closed, never falling back to visible subscriptions.
+Selected subscriptions uses `{"mode": "subscriptions", "scopes": ["/subscriptions/<guid>", ...]}`.
+It covers all resources in exactly those subscriptions, not merely managed resources and not future
+tenant subscriptions. On every run additionally pass `subscription_inventory` (fresh Enabled
+subscription metadata with `id` or `subscriptionId`, `tenantId`, `state`), `verified_agent_scopes`
+and `verified_cost_scopes` to `resolve_dashboard_scopes`. Verify every selected subscription
+against the current agent tenant, the exact agent principal's inherited cost-read roles, and a
+successful per-subscription cost probe using the active connector identity (or the explicitly
+disclosed UsageDetails fallback under the agent identity). Only successful independent checks
+populate these scope lists. Caller-visible `az account list` choices do not establish agent or
+connector access. Missing, invalid, foreign-tenant, disabled or incompletely authorized selections
+fail closed before analysis/report save: never silently remove failed subscriptions.
 Use the returned effective scopes as the boundary passed to pure planners/filters and analysis
 helpers. It does not update managedResources or change `decide_scope_policy` for standalone
 skills, subagents or other scheduled tasks. Those still accept no scheduled override.

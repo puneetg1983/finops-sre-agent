@@ -53,7 +53,12 @@ documents **Cost Management Reader** at management-group/subscription/RG scopes 
 Access Administrator** to grant it. It also documents EA AO-view-charges and MCA Azure-charges policy
 requirements. Role assignment alone doesn't bypass those policies.
 
-Setup asks **Managed resources** vs **Everything** before making changes. Everything means all
+Setup asks **Managed resources**, **Everything**, or **Selected subscriptions** before making changes.
+Selected subscriptions allows one or multiple explicitly confirmed subscriptions in the verified
+agent tenant, preselecting the hosting subscription when selectable. It includes unmanaged resources
+within that exact list, not future subscriptions. Caller-visible inventory is only a selection
+source; the agent's roles and active connector/fallback cost access must independently cover
+every selection or setup/reporting fails closed. Everything means all
 resources in the agent's tenant root management group, including future descendant subscriptions.
 It explicitly requests an OBO grant to the actual **agent managed-identity principal**, not the
 chatting user or the ARM MCP connector identity. Root scope is displayed before approval.

@@ -124,7 +124,8 @@ def canonicalize_resource_id(resource_id):
 
 
 def resolve_dashboard_scopes(managed_resources, policy, management_group_expansions=None,
-                             *, tenant_id=None):
+                             *, tenant_id=None, subscription_inventory=None,
+                             verified_agent_scopes=None, verified_cost_scopes=None):
     """Resolve a setup-confirmed dashboard boundary without weakening skill policy."""
     if not isinstance(policy, dict) or set(policy) != {"mode", "scopes"}:
         raise ValueError("dashboard policy requires mode and scopes")
@@ -133,6 +134,49 @@ def resolve_dashboard_scopes(managed_resources, policy, management_group_expansi
         if roots != []:
             raise ValueError("managed dashboard must use live managedResources")
         boundary = managed_resources
+    elif mode == "subscriptions":
+        if not isinstance(roots, list) or not roots:
+            raise ValueError("Selected subscriptions requires a non-empty confirmed scope list")
+        try:
+            tenant = uuid.UUID(str(tenant_id))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("agent tenant ID must be a GUID") from exc
+        boundary = []
+        for value in roots:
+            root = canonicalize_scope(value)
+            if scope_kind(root) != "subscription":
+                raise ValueError("Selected subscriptions requires subscription scopes only")
+            try:
+                sub = uuid.UUID(root.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                raise ValueError("selected subscription ID must be a GUID") from exc
+            if str(sub) != root.rsplit("/", 1)[-1].lower():
+                raise ValueError("selected subscription ID must be a hyphenated GUID")
+            boundary.append(f"/subscriptions/{sub}")
+        if not isinstance(subscription_inventory, list):
+            raise ValueError("selected subscriptions require fresh tenant verification")
+        verified_tenants = {}
+        for row in subscription_inventory:
+            if not isinstance(row, dict):
+                raise ValueError("malformed subscription inventory")
+            try:
+                sub = uuid.UUID(str(row.get("subscriptionId") or row.get("id")))
+                row_tenant = uuid.UUID(str(row.get("tenantId")))
+            except (ValueError, AttributeError) as exc:
+                raise ValueError("invalid subscription tenant metadata") from exc
+            key = f"/subscriptions/{sub}"
+            if key in verified_tenants:
+                raise ValueError("duplicate subscription tenant metadata")
+            verified_tenants[key] = (row_tenant, row.get("state"))
+        for root in boundary:
+            if verified_tenants.get(root) != (tenant, "Enabled"):
+                raise ValueError("selected subscription is unavailable, disabled or outside the agent tenant")
+        for label, evidence in (("agent", verified_agent_scopes), ("cost transport", verified_cost_scopes)):
+            if not isinstance(evidence, list):
+                raise ValueError(f"selected subscriptions require verified {label} access")
+            verified = {canonicalize_scope(item).casefold() for item in evidence}
+            if any(root.casefold() not in verified for root in boundary):
+                raise ValueError(f"selected subscriptions have incomplete {label} access")
     elif mode == "everything":
         if not isinstance(roots, list) or len(roots) != 1:
             raise ValueError("Everything requires one confirmed tenant root management group")

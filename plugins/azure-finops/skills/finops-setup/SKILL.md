@@ -1,6 +1,6 @@
 ---
 name: finops-setup
-description: Sets up, repairs or refreshes Azure FinOps from chat. MUST ask whether the dashboard covers Everything or only Managed resources. Grants missing read-only roles on behalf of the user (OBO), creates one daily consolidated dashboard task plus managed-resource anomaly alerts, and builds the single Live Report immediately.
+description: Sets up, repairs or refreshes Azure FinOps from chat. MUST ask whether the dashboard covers Managed resources, Everything or Selected subscriptions (one or multiple). Grants missing read-only roles on behalf of the user (OBO), creates one daily consolidated dashboard task plus managed-resource anomaly alerts, and builds the single Live Report immediately.
 ---
 
 # FinOps setup
@@ -10,13 +10,14 @@ the single dashboard report ID. Do not create the former six individual reports.
 
 ## Step 0: Mandatory dashboard scope choice
 
-**MUST ask the end user for input and wait for an explicit answer before discovery/grants or task
-changes**, including on setup/repair runs. Use the platform's user-input tool, not a rhetorical
+**MUST ask the end user for input and wait for an explicit answer before scope/grant discovery or task
+changes**, including on setup/repair runs. Only read identity/subscription metadata needed to present
+the choices before that answer. Use the platform's user-input tool, not a rhetorical
 question or an inferred default:
 
-> Should the FinOps dashboard cover Everything in this Azure tenant, or only the agent's Managed resources?
+> Should the FinOps dashboard cover Managed resources, Everything in this Azure tenant, or Selected subscriptions (one or multiple)?
 
-Choices: **Managed resources** and **Everything**. Explain that Everything includes unmanaged
+Choices: **Managed resources**, **Everything**, and **Selected subscriptions**. Explain that Everything includes unmanaged
 resources in the agent's tenant, requires a tenant-wide read-only cost grant, and broadens the
 contents visible to dashboard viewers. Silence is not consent. This choice affects the dashboard
 only; anomaly alerts and other standalone skills retain their managed-resource boundary.
@@ -29,8 +30,24 @@ only; anomaly alerts and other standalone skills retain their managed-resource b
   and root scope with the permission explanation. Pass `--scope-mode everything
   --dashboard-scope <rootScope>` to both `discover` and `task-plan`. The root must match the agent's
   tenant, not another CLI context. Do not change the agent's managedResources.
+- **Selected subscriptions:** read the agent subscription's verified tenant ID, then obtain
+  `az account list --all -o json` through the Azure CLI read tool under the signed-in caller's
+  context (with explicit OBO read consent if needed). Save as `subscriptions.json`. Present only
+  Enabled subscriptions in that tenant, showing names and IDs, in a multi-select input. Preselect
+  the subscription **hosting the agent** (not an unrelated CLI default) if visible and Enabled;
+  otherwise present no default and disclose why. Require explicit user confirmation even for
+  the preselection; allow one or multiple selections. If no multi-select tool exists, ask for a
+  confirmed list of displayed IDs. No empty, malformed, disabled or out-of-tenant selection.
+  Explain that this includes all resources, including unmanaged resources, in exactly those
+  subscriptions, not the whole tenant or future subscriptions. Pass `--scope-mode subscriptions`
+  and repeat `--dashboard-scope /subscriptions/<guid>` for every confirmed subscription to
+  `discover` and `task-plan`. Also pass `--subscriptions-json <subscriptions.json>` and
+  `--tenant-id <verified agent tenant ID>` to `discover`. The inventory establishes selectable
+  choices only: it does not prove access for the agent identity or the ARM MCP connector user.
+  Do not change managedResources.
 
-No other setup questions are necessary. Use the default schedules, no email and no GitHub
+Apart from confirming the selected subscription list, no other setup questions are necessary.
+Use the default schedules, no email and no GitHub
 correlation unless supplied. Never ask for secrets.
 
 ## Ground rules
@@ -57,16 +74,20 @@ correlation unless supplied. Never ask for secrets.
    `tmp/finops-setup/agent.json`. A permission prompt to read the agent itself may be expected.
 2. Run `python3 $SKILL_DIR/setup.py discover --agent-json tmp/finops-setup/agent.json
    --identity-info "<value>" <selected scope flags> > tmp/finops-setup/discovery.json`.
-   In Everything mode, also pass `--tenant-id <verified agent subscription tenant ID>` to discover
+   In Everything or Selected subscriptions mode, also pass `--tenant-id <verified agent subscription tenant ID>` to discover
    (not task-plan). It must match `identity.tenantId` when present and the selected root, so a
-   wrong-tenant grant plan is rejected before any OBO write.
+   wrong-tenant grant plan is rejected before any OBO write. Selected subscriptions additionally
+   requires `--subscriptions-json` with the caller-visible inventory saved above.
 3. Managed mode with empty/malformed managedResources fails closed: ask the user to configure
-   **Settings > Managed resources**, then re-run setup. Everything can work without managedResources;
+   **Settings > Managed resources**, then re-run setup. Everything and Selected subscriptions can work without managedResources;
    in that case create only the dashboard task (`--only dashboard-report`) and disclose that
    anomaly alerts require managedResources. Malformed nonempty managedResources still fails.
 4. For Everything, verify the root identity against the agent tenant and attempt a complete
    recursive hierarchy read. If permission is missing, proceed to the explicit OBO grant in step 2;
    never treat a partial subscription inventory as Everything.
+5. In Selected subscriptions mode, discovery validates each selected ID's tenant and Enabled state.
+   `selectableSubscriptions` and `defaultSubscriptionScope` are UI hints, not permission evidence.
+   `accessVerification` remains pending until independent role checks and cost probes succeed.
 
 ## Step 2: Check roles and obtain OBO consent
 
@@ -85,13 +106,17 @@ correlation unless supplied. Never ask for secrets.
 
    Also disclose any Reader grant on the agent and cost grants needed for the separate
    managed-resource anomaly task. Do not promise that there will be exactly one platform prompt.
+   For **Selected subscriptions**, explain and obtain OBO consent for **Cost Management Reader**
+   on each exact selected subscription for the resolved agent principal, plus any separate
+   managed-resource anomaly scopes printed by the plan. No tenant root grant is needed for
+   the dashboard. Never grant a broader scope just because some selected subscriptions fail.
 4. Success or "role assignment already exists" is done. If consent is declined, do not retry,
    change scope, or execute a grant elsewhere. If the user lacks grant rights, generate
    `python3 $SKILL_DIR/setup.py grant-script --discovery tmp/finops-setup/discovery.json
    --checks-dir tmp/finops-setup/checks > tmp/finops-setup/finops-rbac.sh`.
    Offer this **reviewable download only** for an authorized Owner / User Access Administrator.
-   This fallback preserves Everything and supports either system- or user-assigned principal IDs.
-   Never use the old managed-only `rbac-script` for an Everything setup.
+   This fallback preserves Everything or Selected subscriptions and supports either system- or
+   user-assigned principal IDs. Never use the old managed-only `rbac-script` for either mode.
 5. Re-list assignments after grants. If access or hierarchy discovery remains blocked, mark
    pending, skip the immediate build and don't claim coverage. Do not query under the user's
    identity to disguise missing agent access. EA AO-view-charges / MCA Azure-charges policy may
@@ -101,7 +126,11 @@ correlation unless supplied. Never ask for secrets.
 
 Look for `*_query_costs`. If missing, disclose the UsageDetails fallback rather than stopping setup.
 After scope and roles are confirmed, probe a small seven-day query on the first resolved effective
-subscription/RG. Authentication errors mean sign-in expired; authorization errors mean the connector
+subscription/RG. For Selected subscriptions, probe **every** confirmed subscription independently,
+and verify the agent's cost-read assignments on every selected scope as well. If the connector
+is missing, verify the disclosed UsageDetails fallback on every selection under the agent identity.
+Missing, denied or incomplete access on any selection leaves setup pending: no immediate build,
+no success claim and no silently reduced selection. Authentication errors mean sign-in expired; authorization errors mean the connector
 user lacks cost access, not that the agent's OBO role grant failed.
 
 Configure through **Plugins > azure-finops > Connectors > Configure**, **OAuth** with scope
@@ -112,6 +141,8 @@ read-only benefit/container tools listed by finops-managed-scope). Deselect writ
 Everything uses fresh root descendants every run, with cost queries at descendant subscription
 scope to avoid management-group billing-agreement query restrictions. Connector access must cover
 those subscriptions too. Never silently narrow to the connector user's visible subscriptions.
+Selected subscriptions never expands to caller/connector-visible inventory or newly added
+subscriptions; changing the list requires explicit setup confirmation.
 
 ## Step 4: Plan tasks
 
@@ -145,7 +176,7 @@ Run the exact **`dashboard-report`** agentPrompt, even if its task action is unc
 If fresh cost permissions haven't propagated, wait about two minutes and retry once. If still
 denied, mark pending; do not save an all-healthy empty dashboard. Optional source failures retain
 their tab, reason and next action; they do not prevent the core dashboard from being saved.
-For managedResources-empty Everything setups, do not run the managed-only anomaly task.
+For managedResources-empty Everything or Selected subscriptions setups, do not run the managed-only anomaly task.
 
 Reuse the exact-name **FinOps: Dashboard** report ID. Duplicate exact names are an explicit conflict,
 not permission to choose or create another. Verify the saved version, then complete task retirement.
@@ -172,6 +203,6 @@ client-side filters restrict access: every report viewer can inspect the whole s
 - Schedule: use `--cron dashboard-report="<five-field cron>"` (or `cost-anomaly`).
 - Read-only subagent: use `subagent-yaml --agent-resource-id <id>` with the documented optional
   `--python-tool` and `--arm-mcp-connection`. Save for download; the user adds it in Agent Canvas.
-  Its standalone requests remain managed-only; it is not the Everything dashboard task runner.
+  Its standalone requests remain managed-only; it is not the Everything or Selected subscriptions dashboard task runner.
 - The legacy `rbac-script --agent-resource-id <id> --client-id <id>` remains for managed-only,
   user-assigned-identity compatibility. Prefer the discovery-based `grant-script`.

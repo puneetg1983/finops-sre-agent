@@ -25,8 +25,8 @@ the agent runs the az commands it prints through its built-in Azure CLI tools.
   task-plan     --agent-resource-id ID [--alert-email E] [--github-repo owner/repo]
                 [--existing FILE] [--only id,id] [--cron id=EXPR ...]
       JSON plan for the dashboard and anomaly scheduled tasks (create | update | unchanged).
-      --scope-mode managed|everything [--dashboard-scope TENANT_ROOT]
-      Everything is a setup-confirmed dashboard-only policy, persisted in its task prompt.
+      --scope-mode managed|everything|subscriptions [--dashboard-scope ARM_SCOPE ...]
+      Fixed scope modes are setup-confirmed dashboard-only policies, persisted in the prompt.
 
   grant-script  --discovery FILE [--checks-dir DIR]
       Exact-principal, exact-scope fallback for an authorized human, including Everything.
@@ -112,7 +112,9 @@ def agent_resource_id(value):
 
 
 def guid(value, what):
-    value = (value or "").strip()
+    if not isinstance(value, str):
+        raise SetupError(f"{what} must be a GUID")
+    value = value.strip()
     if not _GUID.fullmatch(value):
         raise SetupError(f"{what} must be a GUID")
     return value.lower()
@@ -239,21 +241,51 @@ def _check_command(scope, principal, sub):
 
 
 def dashboard_policy(mode="managed", scopes=None):
-    if mode not in ("managed", "everything"):
-        raise SetupError("dashboard scope mode must be managed or everything")
+    if mode not in ("managed", "everything", "subscriptions"):
+        raise SetupError("dashboard scope mode must be managed, everything or subscriptions")
     if mode == "managed":
         if scopes:
             raise SetupError("managed mode cannot contain fixed dashboard scopes")
         return {"mode": mode, "scopes": []}
+    if not isinstance(scopes, list) or not scopes:
+        raise SetupError("fixed dashboard scope requires a non-empty confirmed scope list")
     roots = managed_scopes(scopes)
+    if mode == "subscriptions":
+        selected = []
+        for root in roots:
+            match = _SUB.fullmatch(root)
+            if not match:
+                raise SetupError("Selected subscriptions requires subscription scopes only")
+            selected.append(f"/subscriptions/{guid(match.group(1), 'subscription ID')}")
+        return {"mode": mode, "scopes": selected}
     if len(roots) != 1 or not _MG.fullmatch(roots[0]):
         raise SetupError("Everything requires the explicitly confirmed tenant root management group")
     guid(roots[0].rsplit("/", 1)[-1], "tenant root management group ID")
     return {"mode": mode, "scopes": roots}
 
 
+def selectable_subscriptions(inventory, tenant_id):
+    """Caller-visible choices, never evidence of agent or connector authorization."""
+    tenant = guid(tenant_id, "agent tenant ID")
+    if not isinstance(inventory, list):
+        raise SetupError("subscription inventory must be the JSON list from az account list --all")
+    choices, seen = {}, set()
+    for row in inventory:
+        if not isinstance(row, dict):
+            raise SetupError("malformed subscription inventory row")
+        sub = guid(row.get("id"), "inventory subscription ID")
+        row_tenant = guid(row.get("tenantId"), "inventory tenant ID")
+        if sub in seen:
+            raise SetupError("duplicate subscription inventory entry")
+        seen.add(sub)
+        if row_tenant == tenant and row.get("state") == "Enabled":
+            choices[sub] = {"scope": f"/subscriptions/{sub}",
+                            "name": str(row.get("name") or sub), "tenantId": tenant}
+    return list(choices.values())
+
+
 def discover(agent_doc, identity_info, scope_mode="managed", dashboard_scopes=None,
-             tenant_id=None):
+             tenant_id=None, subscription_inventory=None):
     if not isinstance(agent_doc, dict):
         raise SetupError("agent JSON must be the object returned by `az resource show`")
     agent_id = agent_resource_id(agent_doc.get("id"))
@@ -261,19 +293,28 @@ def discover(agent_doc, identity_info, scope_mode="managed", dashboard_scopes=No
     principal = resolve_principal(agent_doc, identity_info)
     props = agent_doc.get("properties") or {}
     policy = dashboard_policy(scope_mode, dashboard_scopes)
-    if scope_mode == "everything":
+    if scope_mode in ("everything", "subscriptions"):
         identity_tenant = (agent_doc.get("identity") or {}).get("tenantId")
         tenant = guid(identity_tenant or tenant_id, "agent tenant ID")
         if tenant_id is not None and guid(tenant_id, "tenant ID") != tenant:
             raise SetupError("supplied tenant ID does not match the agent identity tenant")
-        if policy["scopes"][0].rsplit("/", 1)[-1].casefold() != tenant:
+        if scope_mode == "everything" and policy["scopes"][0].rsplit("/", 1)[-1].casefold() != tenant:
             raise SetupError("Everything root must match the agent tenant ID")
+    choices = []
+    if scope_mode == "subscriptions":
+        choices = selectable_subscriptions(subscription_inventory, tenant)
+        allowed = {choice["scope"] for choice in choices}
+        if any(scope not in allowed for scope in policy["scopes"]):
+            raise SetupError("selected subscription is unavailable, disabled or outside the agent tenant")
     raw_managed = (props.get("knowledgeGraphConfiguration") or {}).get("managedResources")
     scopes = managed_scopes(raw_managed) if raw_managed else []
     if not scopes and scope_mode == "managed":
         managed_scopes(raw_managed)  # fail closed, retaining the actionable error
-    report_scopes = policy["scopes"] if scope_mode == "everything" else scopes
+    report_scopes = policy["scopes"] if scope_mode != "managed" else scopes
     cost_scopes = cost_reader_scopes(report_scopes)
+    if scope_mode == "subscriptions":
+        # The independent anomaly task still needs its original managed boundary.
+        cost_scopes = cost_reader_scopes(report_scopes + scopes)
     pid = principal["principalId"]
 
     requirements = [{
@@ -303,6 +344,18 @@ def discover(agent_doc, identity_info, scope_mode="managed", dashboard_scopes=No
         "dashboardScopes": report_scopes,
         "costReaderScopes": cost_scopes,
         "requirements": requirements,
+        "selectableSubscriptions": choices,
+        "defaultSubscriptionScope": (
+            f"/subscriptions/{agent_sub.lower()}"
+            if scope_mode != "subscriptions"
+            or any(choice["scope"] == f"/subscriptions/{agent_sub.lower()}" for choice in choices)
+            else ""
+        ),
+        "accessVerification": {
+            "agent": "pending-role-checks",
+            "connector": "pending-per-subscription-cost-probes",
+            "callerInventoryIsAccessProof": False,
+        },
     }
 
 
@@ -619,6 +672,8 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
     current = _existing_tasks(existing or [])
     values = _values(agent_id, email, repo)
     if scope_mode is None:
+        if dashboard_scopes:
+            raise SetupError("dashboard scopes require an explicit scope mode")
         previous = [task for task in current
                     if task["name"] == "FinOps: Dashboard (Live Report, Daily)"]
         if len(previous) > 1:
@@ -702,9 +757,11 @@ def main(argv=None):
     p = sub.add_parser("discover")
     p.add_argument("--agent-json", type=Path, required=True)
     p.add_argument("--identity-info", required=True)
-    p.add_argument("--scope-mode", choices=("managed", "everything"), default="managed")
+    p.add_argument("--scope-mode", choices=("managed", "everything", "subscriptions"), default="managed")
     p.add_argument("--dashboard-scope", action="append", default=[])
-    p.add_argument("--tenant-id", help="agent subscription tenant, required for Everything if absent from agent identity")
+    p.add_argument("--tenant-id", help="verified agent subscription tenant for Everything or Selected subscriptions")
+    p.add_argument("--subscriptions-json", type=Path,
+                   help="caller-visible az account list --all JSON; required for subscriptions mode, not access proof")
 
     p = sub.add_parser("grant-plan")
     p.add_argument("--discovery", type=Path, required=True)
@@ -735,14 +792,15 @@ def main(argv=None):
     p.add_argument("--existing", type=Path)
     p.add_argument("--only", default="")
     p.add_argument("--cron", action="append", default=[], metavar="ID=EXPR")
-    p.add_argument("--scope-mode", choices=("managed", "everything"))
+    p.add_argument("--scope-mode", choices=("managed", "everything", "subscriptions"))
     p.add_argument("--dashboard-scope", action="append", default=[])
 
     args = parser.parse_args(argv)
     try:
         if args.command == "discover":
             out = discover(_load_json(args.agent_json), args.identity_info,
-                           args.scope_mode, args.dashboard_scope, args.tenant_id)
+                           args.scope_mode, args.dashboard_scope, args.tenant_id,
+                           _load_json(args.subscriptions_json) if args.subscriptions_json else None)
         elif args.command == "grant-plan":
             out = grant_plan(_load_json(args.discovery), args.checks_dir)
         elif args.command == "scopes":

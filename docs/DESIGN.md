@@ -3,7 +3,7 @@
 A standard Azure SRE Agent plugin: 11 skills plus an ARM MCP server declaration. Plugin install
 alone does not provision tasks, reports, RBAC or subagents; the in-chat setup skill closes that gap.
 
-**Experience:** Install > "Set up FinOps for me" > choose Managed resources / Everything >
+**Experience:** Install > "Set up FinOps for me" > choose Managed resources / Everything / Selected subscriptions >
 approve missing read-only OBO grants > open **FinOps: Dashboard**.
 
 ## One report, not a report collection
@@ -35,8 +35,9 @@ the set of subscriptions visible to a user.
 |---|---|---|
 | Managed resources | Agent managedResources, fetched live every run; exact RG boundaries retained | Cost Management Reader on managed subscriptions/MGs (containing subscription for UsageDetails transport) |
 | Everything | Agent tenant root MG, verified against the agent tenant, recursively expanded each run | Cost Management Reader on the root, inherited by existing and future subscriptions |
+| Selected subscriptions | All resources in one or multiple explicitly confirmed Enabled subscriptions in the agent tenant; host subscription preselected when selectable | Cost Management Reader on each selected subscription, plus separate managed-resource anomaly scopes as needed |
 
-Both need Reader on the agent itself. All grants are explicit **OBO** Azure CLI write calls;
+All modes need Reader on the agent itself. All grants are explicit **OBO** Azure CLI write calls;
 the agent never gets role-assignment privileges. A reviewable exact-principal fallback script is
 provided when the user cannot grant roles. Root-wide access and the resulting report audience
 exposure must be explained before consent. EA/MCA charge-visibility policy can still block cost
@@ -48,6 +49,11 @@ Other skills, the optional subagent and the separate daily **14:00 UTC** anomaly
 their original strict managed-resource policy. No changes are made to managedResources.
 Missing or incomplete hierarchy discovery fails closed rather than shrinking "Everything" to
 visible subscriptions. Root MG grants are inherited, but cost queries run on descendant subscriptions.
+Selected subscriptions persists only confirmed subscription IDs, not the caller's full visible
+inventory. Caller-visible choices do not prove access: fresh tenant metadata, agent-principal
+role checks and independent cost-transport probes must cover every selection on every run.
+Missing/incomplete access fails closed before saving a report; changing the list requires setup
+confirmation. No root grant or implicit future-subscription inclusion is added for this mode.
 
 ## Setup, repair and migration
 

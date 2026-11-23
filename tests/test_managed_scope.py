@@ -31,6 +31,69 @@ VM_OTHER = f"{RG_OTHER}/providers/Microsoft.Compute/virtualMachines/vm-b"
 VM_B = f"{SUB_B}/resourceGroups/team/providers/Microsoft.Compute/virtualMachines/vm-b"
 
 
+TENANT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+SELECTED = [
+    "/subscriptions/11111111-2222-3333-4444-555555555555",
+    "/subscriptions/66666666-7777-8888-9999-000000000000",
+]
+
+
+def selected_subscription_evidence():
+    return {
+        "tenant_id": TENANT,
+        "subscription_inventory": [
+            {"id": selected.rsplit("/", 1)[-1], "tenantId": TENANT, "state": "Enabled"}
+            for selected in SELECTED
+        ],
+        "verified_agent_scopes": SELECTED,
+        "verified_cost_scopes": SELECTED,
+    }
+
+
+def test_dashboard_selected_subscriptions_includes_unmanaged_resources_without_widening():
+    result = scope.resolve_dashboard_scopes(
+        [RG_A], {"mode": "subscriptions", "scopes": SELECTED + [SELECTED[0].upper()]},
+        **selected_subscription_evidence())
+    assert result["effective_scopes"] == SELECTED
+    assert scope.scope_contains(result["effective_scopes"], f"{SELECTED[1]}/resourceGroups/unmanaged")
+    assert not scope.scope_contains(result["effective_scopes"], RG_A)
+    managed = scope.resolve_dashboard_scopes([RG_A], {"mode": "managed", "scopes": []})
+    assert managed["effective_scopes"] == [RG_A]
+    assert not scope.decide_scope_policy(
+        SELECTED, [RG_A], mode="scheduled")["allowed"]
+
+
+@pytest.mark.parametrize("roots", [
+    [], [RG_A], [MG_ROOT], ["/subscriptions/not-a-guid"],
+    [SELECTED[0].replace("-", "")],
+])
+def test_dashboard_selected_subscriptions_rejects_invalid_selection(roots):
+    with pytest.raises(ValueError):
+        scope.resolve_dashboard_scopes(
+            [], {"mode": "subscriptions", "scopes": roots}, **selected_subscription_evidence())
+
+
+@pytest.mark.parametrize("key,value", [
+    ("tenant_id", None), ("subscription_inventory", None), ("subscription_inventory", []),
+    ("verified_agent_scopes", None), ("verified_agent_scopes", SELECTED[:1]),
+    ("verified_cost_scopes", None), ("verified_cost_scopes", SELECTED[:1]),
+])
+def test_dashboard_selected_subscriptions_fails_closed_on_missing_or_incomplete_access(key, value):
+    evidence = selected_subscription_evidence()
+    evidence[key] = value
+    with pytest.raises(ValueError):
+        scope.resolve_dashboard_scopes([], {"mode": "subscriptions", "scopes": SELECTED}, **evidence)
+
+
+@pytest.mark.parametrize("change", [{"tenantId": "11111111-2222-3333-4444-555555555555"},
+                                  {"state": "Disabled"}, {"tenantId": None}])
+def test_dashboard_selected_subscriptions_rechecks_tenant_and_state(change):
+    evidence = selected_subscription_evidence()
+    evidence["subscription_inventory"][1].update(change)
+    with pytest.raises(ValueError):
+        scope.resolve_dashboard_scopes([], {"mode": "subscriptions", "scopes": SELECTED}, **evidence)
+
+
 def test_canonicalizes_all_supported_scope_kinds():
     assert scope.canonicalize_scope(" /SUBSCRIPTIONS/Sub-A/ ") == SUB_A
     assert scope.canonicalize_scope(

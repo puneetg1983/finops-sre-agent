@@ -18,14 +18,18 @@ replaced by the in-chat `finops-setup` skill.
 3. On the plugin page, under **Connectors**, select **Configure** for `azure-resource-manager`; choose
    **OAuth** with scope `api://22bfbae3-f4e7-485f-be43-8cee15065084/.default`, sign in, and select only
    its read tools. See [plugins/azure-finops/README.md](plugins/azure-finops/README.md#arm-mcp-connector).
-4. In chat: **"Set up FinOps for me"**. Choose **Managed resources** or **Everything** when asked,
-   then approve any required OBO permission prompt.
+4. In chat: **"Set up FinOps for me"**. Choose **Managed resources**, **Everything**, or
+   **Selected subscriptions** (one or multiple; the agent's hosting subscription is preselected,
+   but requires confirmation), then approve any required OBO permission prompt.
 
 The agent grants missing read-only cost roles on your behalf and builds **one consolidated FinOps
 dashboard** with 17 sections, local search, charts and print/PDF. One task refreshes it daily; a
 separate managed-resource anomaly task handles alerts. Everything means all resources in the agent's
 Azure tenant, discovered from its root management group, including unmanaged resources. It requires
 Cost Management Reader at that root, approved via OBO. Other skills remain managed-resource-only.
+Selected subscriptions instead covers all resources in exactly the confirmed same-tenant
+subscriptions, with per-subscription cost grants and separate agent/connector access verification.
+Missing access leaves setup pending, never silently narrowing the selection.
 
 Optional inputs (such as namespace allocation, business volumes, carbon data and billing exports)
 show explicit unavailable/partial states until connected, never made-up metrics.

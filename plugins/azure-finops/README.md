@@ -6,10 +6,17 @@ Install from the Plugin Marketplace, configure the ARM MCP connector, then say
 
 ## Mandatory scope choice and OBO permissions
 
-Setup asks whether the dashboard covers **Managed resources** or **Everything** and waits for
+Setup asks whether the dashboard covers **Managed resources**, **Everything**, or **Selected
+subscriptions** and waits for
 an explicit answer. Managed mode follows the agent's live managedResources, preserving exact RG
 boundaries. Everything covers all resources in the agent's Azure tenant, including unmanaged ones,
 using the tenant root management group and fresh recursive subscription discovery.
+Selected subscriptions includes all resources in one or multiple explicitly confirmed Enabled
+subscriptions in the verified agent tenant. The hosting subscription is preselected when visible,
+but still needs confirmation. Caller-visible choices do not establish agent or connector access;
+both are independently checked for every selection. Missing or incomplete access leaves setup
+pending without dropping subscriptions. This mode requests per-subscription cost grants, not
+a tenant-root grant, plus any separate managed-resource anomaly grants needed.
 
 For Everything, setup explicitly explains and requests an **on-behalf-of (OBO)** permission prompt
 to assign the **agent's managed identity** the **Cost Management Reader** Azure RBAC role at tenant
@@ -19,10 +26,10 @@ The approving user needs grant rights at those scopes; otherwise setup provides 
 script for an authorized administrator to review and run. Billing policy may also require EA
 AO-view-charges or MCA Azure-charges access.
 
-Only the dashboard uses Everything. Standalone skills, anomaly alerts and the optional subagent
+Only the dashboard uses Everything or Selected subscriptions. Standalone skills, anomaly alerts and the optional subagent
 remain managed-resource-only. Setup does not modify managedResources. If the root hierarchy
 cannot be completely read, the dashboard fails closed rather than reporting only visible
-subscriptions as Everything. An Everything dashboard can run without managedResources; in that
+subscriptions as Everything. Either fixed-scope dashboard can run without managedResources; in that
 case setup does not create the managed-only anomaly task.
 
 ## ARM MCP connector

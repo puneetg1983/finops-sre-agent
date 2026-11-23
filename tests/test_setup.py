@@ -300,7 +300,7 @@ def test_every_skill_has_frontmatter_matching_folder():
 def test_setup_skill_contract():
     text = (SETUP_DIR / "SKILL.md").read_text()
     assert "MUST ask the end user" in text
-    assert "**Managed resources** and **Everything**" in text
+    assert "**Managed resources**, **Everything**, and **Selected subscriptions**" in text
     assert "on behalf of the user (OBO)" in text
     assert "Never use the terminal for `az`" in text
     assert "Check roles by listing assignments" in text
@@ -382,3 +382,103 @@ def test_migration_retires_all_and_only_exact_legacy_tasks():
     plan = setup.task_plan(AGENT, existing=existing)
     assert {task["taskName"] for task in plan["retire"]} == set(old_names)
     assert "custom" not in {task["existingTaskId"] for task in plan["retire"]}
+
+
+def subscription_inventory():
+    return [
+        {"id": SUB, "name": "Agent subscription", "tenantId": SUB2, "state": "Enabled"},
+        {"id": SUB2, "name": "Another subscription", "tenantId": SUB2, "state": "Enabled"},
+    ]
+
+
+def test_selected_subscriptions_discovers_choices_without_claiming_access():
+    selected = [f"/SUBSCRIPTIONS/{SUB.upper()}", f"/subscriptions/{SUB2}", f"/subscriptions/{SUB}"]
+    disc = setup.discover(agent_doc(managed=[]), "MSI", "subscriptions", selected,
+                          subscription_inventory=subscription_inventory())
+    assert disc["dashboardPolicy"] == {
+        "mode": "subscriptions", "scopes": [f"/subscriptions/{SUB}", f"/subscriptions/{SUB2}"]}
+    assert disc["dashboardScopes"] == disc["costReaderScopes"] == disc["dashboardPolicy"]["scopes"]
+    assert disc["defaultSubscriptionScope"] == f"/subscriptions/{SUB}"
+    assert len(disc["selectableSubscriptions"]) == 2
+    assert disc["accessVerification"]["callerInventoryIsAccessProof"] is False
+    assert disc["accessVerification"]["agent"] == "pending-role-checks"
+    grants = setup.grant_plan(disc)["grants"]
+    assert [grant["scope"] for grant in grants] == [AGENT, *disc["dashboardScopes"]]
+    assert all(SAMI_PRINCIPAL in grant["command"] for grant in grants)
+    assert all(grant["command"] in setup.grant_script(disc) for grant in grants)
+    assert ROOT_MG not in json.dumps(grants)
+
+
+def test_selected_subscription_grants_preserve_separate_anomaly_requirements():
+    disc = setup.discover(agent_doc(), "MSI", "subscriptions", [f"/subscriptions/{SUB}"],
+                          subscription_inventory=subscription_inventory())
+    assert disc["dashboardScopes"] == [f"/subscriptions/{SUB}"]
+    assert disc["costReaderScopes"] == [
+        f"/subscriptions/{SUB}", f"/subscriptions/{SUB2}",
+        "/providers/Microsoft.Management/managementGroups/mg1"]
+
+
+def test_selected_subscriptions_does_not_preselect_an_unavailable_host_subscription():
+    inventory = subscription_inventory()
+    inventory[0]["tenantId"] = SUB  # caller can see it, but it is not an eligible choice
+    disc = setup.discover(agent_doc(managed=[]), "MSI", "subscriptions",
+                          [f"/subscriptions/{SUB2}"], subscription_inventory=inventory)
+    assert disc["defaultSubscriptionScope"] == ""
+    assert [choice["scope"] for choice in disc["selectableSubscriptions"]] == [f"/subscriptions/{SUB2}"]
+
+
+@pytest.mark.parametrize("selection", [
+    [], ["not-an-id"], [f"/subscriptions/{SUB}/resourceGroups/rg"],
+    [ROOT_MG], ["/subscriptions/not-a-guid"],
+])
+def test_selected_subscriptions_rejects_empty_or_non_subscription_selection(selection):
+    with pytest.raises(setup.SetupError):
+        setup.dashboard_policy("subscriptions", selection)
+
+
+@pytest.mark.parametrize("inventory", [
+    None, [], {}, [{"id": SUB}],  # absent/incomplete metadata
+    [{"id": SUB, "tenantId": SUB, "state": "Enabled"}],  # foreign tenant
+    [{"id": SUB, "tenantId": SUB2, "state": "Disabled"}],
+])
+def test_selected_subscriptions_rejects_unverified_inventory(inventory):
+    with pytest.raises(setup.SetupError):
+        setup.discover(agent_doc(), "MSI", "subscriptions", [f"/subscriptions/{SUB}"],
+                       subscription_inventory=inventory)
+
+
+def test_selected_subscriptions_rejects_conflicting_agent_tenant_before_grants():
+    with pytest.raises(setup.SetupError, match="does not match"):
+        setup.discover(agent_doc(), "MSI", "subscriptions", [f"/subscriptions/{SUB}"],
+                       tenant_id=SUB, subscription_inventory=subscription_inventory())
+
+
+def test_selected_subscriptions_preserves_policy_on_task_repair_and_isolates_anomaly():
+    scopes = [f"/subscriptions/{SUB}", f"/subscriptions/{SUB2}"]
+    first = setup.task_plan(AGENT, scope_mode="subscriptions", dashboard_scopes=scopes)
+    anomaly, dashboard = first["tasks"]
+    assert "DASHBOARD_POLICY_JSON:" not in anomaly["agentPrompt"]
+    assert "STRICT MANAGED-SCOPE PREAMBLE" in anomaly["agentPrompt"]
+    assert "microsoft-product-icons.svg" in dashboard["agentPrompt"]
+    existing = [{"id": "dashboard", "name": dashboard["taskName"],
+                 "cronExpression": dashboard["cronExpression"], "agentPrompt": dashboard["agentPrompt"]}]
+    repaired = setup.task_plan(AGENT, existing=existing, email="a@contoso.com")
+    assert repaired["dashboardPolicy"] == first["dashboardPolicy"]
+    assert repaired["tasks"][1]["action"] == "unchanged"
+    with pytest.raises(setup.SetupError, match="explicit scope mode"):
+        setup.task_plan(AGENT, existing=existing, dashboard_scopes=[scopes[0]])
+
+
+def test_selected_subscriptions_cli_round_trip(tmp_path, capsys):
+    agent_path, inventory_path = tmp_path / "agent.json", tmp_path / "subscriptions.json"
+    agent_path.write_text(json.dumps(agent_doc(managed=[])))
+    inventory_path.write_text(json.dumps(subscription_inventory()))
+    args = ["--scope-mode", "subscriptions", "--dashboard-scope", f"/subscriptions/{SUB}",
+            "--dashboard-scope", f"/subscriptions/{SUB2}"]
+    assert setup.main(["discover", "--agent-json", str(agent_path), "--identity-info", "MSI",
+                       "--subscriptions-json", str(inventory_path), "--tenant-id", SUB2, *args]) == 0
+    discovery = json.loads(capsys.readouterr().out)
+    assert setup.main(["task-plan", "--agent-resource-id", AGENT, "--only", "dashboard-report", *args]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert discovery["dashboardPolicy"] == plan["dashboardPolicy"]
+    assert setup.main(["discover", "--agent-json", str(agent_path), "--identity-info", "MSI", *args]) == 2

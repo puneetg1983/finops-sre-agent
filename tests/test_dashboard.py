@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,30 @@ def test_underlying_partial_and_warnings_cannot_be_hidden_by_ready_envelope():
                                        "warnings": ["Subscription denied"]})})
     assert tab(model, "overview")["status"] == "partial"
     assert "Overview: Subscription denied" in model["warnings"]
+
+
+def test_selected_subscriptions_preserve_scope_and_render_distinct_label():
+    selected = ["/subscriptions/00000000-0000-0000-0000-000000000001",
+                "/subscriptions/00000000-0000-0000-0000-000000000002"]
+    model = dashboard.build_dashboard_model(
+        {}, refreshed_at=NOW, scope_summary=selected, window=WINDOW,
+        scope_mode="subscriptions",
+    )
+    assert model["scopeMode"] == "subscriptions"
+    assert model["scopeSummary"] == selected
+    output = renderer.render_report(model)
+    assert "Selected subscriptions" in output
+    assert "Scope: Managed resources" not in output
+    assert all(value in output for value in selected)
+
+
+def test_unknown_dashboard_scope_mode_is_rejected_without_managed_fallback():
+    with pytest.raises(ValueError, match="scope_mode"):
+        build(scope_mode="unknown")
+    model = build()
+    model["scopeMode"] = "unknown"
+    with pytest.raises(ValueError, match="scopeMode"):
+        renderer.render_report(model)
 
 
 @pytest.mark.parametrize("change,match", [
@@ -204,13 +229,31 @@ def test_dashboard_icons_and_mobile_section_selector_are_self_contained():
     uses = re.findall(r'<use href="#([^"]+)"', output)
     assert len(symbols) >= 17
     assert set(uses) <= symbols
-    assert {"fluent-cloud", "fluent-money-calculator", "fluent-agents"} <= set(uses)
+    assert {"product-azure", "product-cost-management", "product-sre-agent"} <= set(uses)
     assert "Copyright (c) 2020 Microsoft Corporation" in output
     assert '<label for="section-select">Report section</label>' in output
     assert output.count("<option ") == 17
     assert "Overview - Unavailable" in output
     assert 'class="dashboard"' in output
     assert '<script src=' not in output
+
+
+def test_official_product_sprite_is_offline_and_keeps_distinct_definitions():
+    sprite = ET.parse(SKILLS / "finops-report-renderer" / "microsoft-product-icons.svg")
+    elements = list(sprite.getroot().iter())
+    ids = [element.attrib["id"] for element in elements if "id" in element.attrib]
+    assert len(ids) == len(set(ids))
+    assert {"product-azure", "product-sre-agent", "product-cost-management",
+            "product-virtual-machine", "product-storage", "product-sql",
+            "product-app-service"} <= set(ids)
+    for element in elements:
+        assert element.tag.rsplit("}", 1)[-1] not in {"script", "image", "foreignObject"}
+        for key, value in element.attrib.items():
+            assert not key.lower().startswith("on")
+            if key.endswith("href"):
+                assert value.startswith("#") and value[1:] in ids
+            for reference in re.findall(r"url\(#([^)]+)\)", value):
+                assert reference in ids
 
 
 def test_single_point_chart_shows_a_label_and_a_visible_point():
@@ -232,6 +275,82 @@ def test_wide_dashboard_tables_have_accessible_scroll_regions():
     assert 'role="region" tabindex="0" aria-label="Detected anomalies table"' in output
     assert "Scroll horizontally to view more columns." in output
     assert '<th scope="col">Dimension</th>' in output
+
+
+def test_explorer_breakdowns_keep_short_names_full_details_and_signed_cents():
+    rows = [
+        {"resourceId": SCOPE + "/providers/Microsoft.Web/sites/very-long-portal-name",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": "App Service",
+         "resourceLocation": "East US", "chargeType": "Usage", "cost_usd": amount}
+        for amount in [.1, .2, -1]
+    ]
+    model = build({"explorer": envelope(rows)})
+    section = tab(model, "explorer")["sections"][0]
+    assert section["breakdown"]["dimensions"] == [("Service", 3), ("Region", 4)]
+    output = renderer._resource_browser(section)
+    assert '<strong>-$0.70</strong>' in output
+    assert '<span class="resource-name">very-long-portal-name</span>' in output
+    assert '<dt>Resource</dt><dd>' + rows[0]["resourceId"] + '</dd>' in output
+    assert 'data-amount="-100"' in output
+    assert 'data-d0="App Service" data-d1="East US"' in output
+    assert 'max="70" value="70"' in output
+
+
+def test_savings_breakdowns_preserve_unknowns_evidence_and_validation():
+    findings = [
+        {"resourceId": SCOPE + "/providers/Microsoft.Compute/virtualMachines/vm-one",
+         "resourceType": "microsoft.compute/virtualmachines", "kind": "oversized",
+         "estMonthlySavingsUsd": 25, "recommendedAction": "Review resize",
+         "validated": False, "evidence": ['Low CPU <script>alert("x")</script>']},
+        {"resourceId": "vm-two", "resourceType": "microsoft.compute/virtualmachines",
+         "kind": "idle", "estMonthlySavingsUsd": None},
+    ]
+    model = build({"rightsizing": envelope(findings)})
+    assert tab(model, "rightsizing")["chart"] is None
+    output = renderer._resource_browser(tab(model, "rightsizing")["sections"][0])
+    assert 'data-d0="Virtual machines"' in output
+    assert '<strong>$25.00</strong>' in output
+    assert '1 unquantified' in output
+    assert 'data-amount=""' in output
+    assert 'contradicted' in output
+    assert '&lt;script&gt;' in output
+    assert '<script>' not in output
+    assert '<dt>Evidence</dt>' in output
+    assert '<dt>Type</dt><dd>microsoft.compute/virtualmachines</dd>' in output
+    unknown_model = build({"rightsizing": envelope(findings[1:])})
+    unknown_output = renderer._resource_browser(tab(unknown_model, "rightsizing")["sections"][0])
+    assert 'Not quantified</strong>' in unknown_output
+    assert 'No quantified amount' in unknown_output
+    assert '$0.00' not in unknown_output
+
+
+def test_empty_breakdowns_and_hostile_dimension_labels():
+    section = tab(build({"explorer": envelope([])}), "explorer")["sections"][0]
+    assert '<p class="breakdown-empty">' in renderer._resource_browser(section)
+    section["rows"] = [['name', 'sub', 'group', '"><img src=x>', 'region', 'Usage', '$1.00']]
+    output = renderer._resource_browser(section)
+    assert '<img' not in output
+    assert 'data-d0="&quot;&gt;&lt;img src=x&gt;"' in output
+
+
+def test_top_services_renders_signed_horizontal_bars_and_preserves_data_table():
+    model = build({"overview": envelope({
+        "total_usd": 1233.56,
+        "by_service": [{"service": "Virtual Machines", "cost_usd": 1234.56},
+                       {"service": "Credits <script>", "cost_usd": -1}],
+    })})
+    output = renderer.render_report(model)
+    assert '<ol class="service-bars" aria-label="Top services by cost">' in output
+    assert '<strong>$1,234.56</strong>' in output
+    assert '<strong>-$1.00</strong>' in output
+    assert 'max="123456" value="100"' in output
+    assert 'Credits &lt;script&gt;' in output
+    assert 'href="#product-virtual-machine"' in output
+    assert 'View service cost data' in output
+    assert 'Live Reports <span aria-hidden="true">/</span> Financial operations' in output
+    assert 'class="workspace-identity"' in output
+    assert '<h1>FinOps: Dashboard</h1>' in output
+    assert 'Powered by Azure SRE Agent' in output
 
 
 def test_managed_dashboard_uses_live_changes_and_rejects_any_fixed_override():

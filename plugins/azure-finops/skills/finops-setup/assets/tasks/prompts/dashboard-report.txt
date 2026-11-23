@@ -2,7 +2,7 @@ Build and SAVE exactly one static snapshot Live Report named `{{REPORT_NAME}}`. 
 
 1. Follow the dashboard scope preamble first. Call ListReports; reuse the exact-name dashboard's reportId via GetReport. If duplicate exact names exist, stop and disclose the conflict instead of choosing one.
 
-2. Read finops-report-renderer SKILL.md and DASHBOARD.md, exact dashboard.py, models.py, render.py, theme.css, dashboard.css and fluent-icons.svg. Keep these files together. Use the existing pure analysis modules from the other FinOps skills, not their standalone report-saving workflows. Everything mode is a dashboard-only policy, not permission to change any other skill's managed-resource policy.
+2. Read finops-report-renderer SKILL.md and DASHBOARD.md, exact dashboard.py, models.py, render.py, theme.css, dashboard.css, fluent-icons.svg and microsoft-product-icons.svg. Keep these files together. Use the existing pure analysis modules from the other FinOps skills, not their standalone report-saving workflows. Everything and Selected subscriptions modes are dashboard-only policies, not permission to change any other skill's managed-resource policy.
 
 3. Capture now = datetime.now(timezone.utc), with a default inclusive 30-day UTC window (today minus 29 days through today). Resolve the scope boundary once; use that same boundary for every cost, budget, inventory, utilization, health and enrichment input. Cost ingestion is delayed and today's rows may be incomplete.
 

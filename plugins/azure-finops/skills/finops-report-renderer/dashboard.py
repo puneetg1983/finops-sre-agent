@@ -257,8 +257,8 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
     unknown = set(sources) - {tab[0] for tab in TABS if tab[0] != "coverage"}
     if unknown:
         raise ValueError("unknown dashboard sources: " + ", ".join(sorted(unknown)))
-    if scope_mode not in ("managed", "everything"):
-        raise ValueError("scope_mode must be managed or everything")
+    if scope_mode not in ("managed", "everything", "subscriptions"):
+        raise ValueError("scope_mode must be managed, everything or subscriptions")
     refreshed_at = _timestamp(refreshed_at, "refreshed_at")
     scopes = _models._stable_strings(_models._strings(scope_summary, "scope_summary"))
     if not scopes:
@@ -310,6 +310,16 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
                 )
             else:
                 panel = _extra(tab_id, envelope["data"])
+            if tab_id == "overview":
+                panel["sections"][0]["visualization"] = "service-bars"
+            if tab_id in {"explorer", "rightsizing"}:
+                section = panel["sections"][0]
+                section["breakdown"] = (
+                    {"kind": "cost", "dimensions": [("Service", 3), ("Region", 4)], "amount": 6}
+                    if tab_id == "explorer" else
+                    {"kind": "savings", "dimensions": [("Resource type", 1), ("Opportunity", 2)], "amount": 6}
+                )
+                panel["chart"] = None
             if panel.get("partial"):
                 status = "partial"
             all_warnings.extend(f"{title}: {warning}" for warning in panel.get("warnings", []))

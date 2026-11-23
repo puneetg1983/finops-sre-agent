@@ -20,7 +20,7 @@
     {
       "id": "dashboard-report",
       "defaultName": "FinOps: Dashboard (Live Report, Daily)",
-      "description": "One consolidated FinOps dashboard with cost, allocation, planning, efficiency, risk and data coverage sections.",
+      "description": "One consolidated FinOps dashboard using the setup-confirmed managed, tenant-wide or selected-subscription boundary, with cost, allocation, planning, efficiency, risk and data coverage sections.",
       "defaultCron": "30 14 * * *",
       "defaultReportName": "FinOps: Dashboard",
       "prompt": "prompts/dashboard-report.txt"
