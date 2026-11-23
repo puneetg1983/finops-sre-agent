@@ -108,7 +108,7 @@ _DASHBOARD_SCRIPT = """
     });
   }
   document.querySelectorAll('.resource-browser').forEach(browser => {
-    const state = {selected: new Map(), tones: new Map(), rows: [...browser.querySelectorAll('tbody tr')]};
+    const state = {selected: new Map(), tones: new Map(), rows: [...browser.querySelectorAll('tbody tr[data-search]')]};
     browsers.set(browser, state);
     browser.querySelectorAll('.resource-filter').forEach(dropdown => {
       dropdown.querySelectorAll('input').forEach(input => { input.disabled = false; });
@@ -223,6 +223,7 @@ _DASHBOARD_SCRIPT = """
     let total = 0, visible = 0, quantified = 0;
     state.rows.forEach(row => {
       row.hidden = !matches(row);
+      row.nextElementSibling.hidden = row.hidden;
       if (!row.hidden) {
         visible++;
         if (row.dataset.amount !== '') { total += Number(row.dataset.amount); quantified++; }
@@ -403,7 +404,7 @@ def _metrics(model):
     return '<div class="metrics">' + "".join(rendered) + "</div>"
 
 
-def _sections(model, heading_level=2):
+def _sections(model, heading_level=2, id_prefix="section"):
     rendered = []
     for index, section in enumerate(_list(model.get("sections"), "sections")):
         if not isinstance(section, dict):
@@ -427,7 +428,7 @@ def _sections(model, heading_level=2):
             )
 
         if section.get("breakdown") and heading_level > 2:
-            rendered.append(_resource_browser(section))
+            rendered.append(_resource_browser(section, f"{id_prefix}-{index}"))
             continue
         if section.get("visualization") == "service-bars" and heading_level > 2 and rows:
             rendered.append(_service_bars(section))
@@ -490,7 +491,7 @@ def _region_pie(entries, tones):
     )
 
 
-def _resource_browser(section):
+def _resource_browser(section, id_prefix="resource"):
     """Render compact identities and faceted, exact-cent breakdowns from adapter tables."""
     config = section["breakdown"]
     dimensions = config["dimensions"]
@@ -503,7 +504,7 @@ def _resource_browser(section):
     rows = section["rows"]
     if not savings:
         rows = sorted(rows, key=lambda row: -Decimal(row[config["amount"]].replace("$", "").replace(",", "")))
-    for row in rows:
+    for row_index, row in enumerate(rows):
         amount = row[config["amount"]]
         cents = None if amount == "\u2014" else int(Decimal(amount.replace("$", "").replace(",", "")) * 100)
         if cents is None:
@@ -535,16 +536,21 @@ def _resource_browser(section):
         group_name = next((segments[i + 1] for i, part in enumerate(segments[:-1])
                            if part.lower() == "resourcegroups"), "(unknown)")
         details = "".join(
-            f"<dt>{_escape(label)}</dt><dd>{_escape(value)}</dd>"
-            for label, value in zip(section["columns"], row)
+            f'<div class="resource-detail-field"><dt>{_escape(label)}</dt><dd>{_escape(value)}</dd></div>'
+            for label, value in list(zip(section["columns"], row))[1:]
         )
         if not savings:
-            details += f'<dt>Resource type</dt><dd>{_escape(resource_type)}</dd>'
+            details += f'<div class="resource-detail-field"><dt>Resource type</dt><dd>{_escape(resource_type)}</dd></div>'
+        details += (
+            f'<div class="resource-detail-field resource-detail-id"><dt>{_escape(section["columns"][0])}</dt>'
+            f'<dd>{_escape(identity)}</dd></div>'
+        )
+        detail_id = f"{id_prefix}-resource-{row_index}"
         identity_html = (
-            f'<details class="resource-identity"><summary title="{_escape(identity)}">'
+            f'<details class="resource-identity"><summary title="{_escape(identity)}" aria-controls="{detail_id}">'
             f'{_icon(_service_icon(row[1] if savings else row[3]))}'
-            f'<span class="resource-name">{_escape(name)}</span></summary>'
-            f'<dl>{details}</dl></details><span class="resource-context">{_escape(group_name if savings else row[2])}</span>'
+            f'<span class="resource-name">{_escape(name)}</span></summary></details>'
+            f'<span class="resource-context">{_escape(group_name if savings else row[2])}</span>'
         )
         cells = (
             [identity_html, _escape(_resource_type_label(row[1])), _escape(row[4]), _escape(row[6]), _escape(row[7])]
@@ -555,6 +561,8 @@ def _resource_browser(section):
             f'<tr {" ".join(attrs)} data-amount="{cents if cents is not None else ""}" '
             f'data-search="{_escape(" ".join(str(cell) for cell in row))}">'
             + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+            + f'<tr class="resource-detail-row" id="{detail_id}"><td colspan="{len(cells)}">'
+            f'<div class="resource-detail-panel"><h4>Resource details</h4><dl>{details}</dl></div></td></tr>'
         )
     charts = []
     for index, (label, _) in enumerate(dimensions):
@@ -898,7 +906,7 @@ def _dashboard(model, intro=""):
             f'<span aria-hidden="true"> | </span> {_escape(tab.get("period"))}</p>'
             + (f'<aside class="warnings">{_escape(panel_warnings)}</aside>' if panel_warnings else "")
             + '</section>' + (_metrics(tab) if tab.get("metrics") else "")
-            + _dashboard_chart(tab) + _sections(tab, heading_level=3) + '</div>'
+            + _dashboard_chart(tab) + _sections(tab, heading_level=3, id_prefix=key) + '</div>'
         )
     return (
         '<div class="dashboard-layout"><aside class="dashboard-sidebar">'

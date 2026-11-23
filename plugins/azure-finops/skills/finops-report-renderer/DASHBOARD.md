@@ -41,7 +41,8 @@ Resource type is derived from the ARM resource ID (including nested and extensio
 unidentifiable types remain `(unknown)`, not guessed from a service name.
 Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines
 filters; search also filters the breakdowns and totals. Clear filters resets the bar selections,
-not the search field. Resource names expand to show full IDs and every original field.
+not the search field. Resource names expand a full-width details panel with the full ID and
+every original field. Filtering hides the corresponding details with each resource row.
 Unknown savings remain unquantified, not zero-valued recommendations. Bar lengths show absolute
 magnitude (including credits); signed USD labels remain authoritative. Counts refer to records,
 not unique resources. These views total the displayed, cent-rounded USD records; they do not

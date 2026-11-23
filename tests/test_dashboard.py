@@ -291,6 +291,9 @@ def test_explorer_breakdowns_keep_short_names_full_details_and_signed_cents():
     assert '<strong>-$0.70</strong>' in output
     assert '<span class="resource-name">very-long-portal-name</span>' in output
     assert '<dt>Resource</dt><dd>' + rows[0]["resourceId"] + '</dd>' in output
+    assert 'aria-controls="resource-resource-0"' in output
+    assert '<tr class="resource-detail-row" id="resource-resource-0"><td colspan="4">' in output
+    assert '<div class="resource-detail-field resource-detail-id">' in output
     assert 'data-amount="-100"' in output
     assert 'data-d0="App Service" data-d1="East US"' in output
     assert 'max="70" value="70"' in output
@@ -380,6 +383,7 @@ def test_savings_breakdowns_preserve_unknowns_evidence_and_validation():
     assert '<script>' not in output
     assert '<dt>Evidence</dt>' in output
     assert '<dt>Type</dt><dd>microsoft.compute/virtualmachines</dd>' in output
+    assert '<tr class="resource-detail-row" id="resource-resource-0"><td colspan="5">' in output
     unknown_model = build({"rightsizing": envelope(findings[1:])})
     unknown_output = renderer._resource_browser(tab(unknown_model, "rightsizing")["sections"][0])
     assert 'Not quantified</strong>' in unknown_output
