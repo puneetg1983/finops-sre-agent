@@ -13,6 +13,10 @@ Azure service symbols and an expandable data table. The heading retains **FinOps
 with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
 authenticated SRE Agent portal or a claim of Microsoft endorsement.
 
+The header has explicit **Light** and **Dark** buttons. The initial theme follows the report
+URL or the browser's color preference; either button switches the open report without a reload,
+Azure call or browser storage. Without JavaScript, the static light stylesheet remains readable.
+
 Dashboard charts use an Azure-style blue-led categorical palette and
 [Microsoft Fluent charting categorical/semantic colors](https://github.com/microsoft/fluentui/blob/master/packages/charts/react-charting/src/utilities/colors.ts).
 Palette tokens are scoped to the dashboard, including light/dark metric status colors;
@@ -72,6 +76,11 @@ signed credits; displayed resource breakdowns sum cent-rounded records.
 Cost explorer uses linked service bars and a region pie chart above a compact resource table.
 Pie slices and region legend buttons filter the resource list; the legend shows amounts and
 percentages. Chart panels grow with their contents rather than using internal scrollbars.
+Each breakdown initially shows at most six entries: five leading categories plus **Other**
+when there are more than six. Other retains the exact combined amount and record count;
+selecting it filters to its actual member categories. **View all categories** expands the
+complete breakdown on demand. The pie uses the same compact grouping and sits at the top
+of its panel, rather than being vertically centered beside a long legend.
 Regional totals containing negative credits use signed bars instead of misleading pie shares;
 zero or empty totals show an explicit no-cost message. Region colors stay stable while filtering.
 At the top of Cost explorer, compact Subscription, Resource type and Region dropdowns default to
@@ -92,6 +101,18 @@ not unique resources. These views total the displayed, cent-rounded USD records;
 deduplicate recommendations or claim that overlapping savings can all be realized.
 Without JavaScript, the complete table and initial breakdowns remain available. Print includes
 all resource rows regardless of interactive filters.
+
+Resource lists default to the **top 10 matching records**, with 25 and 50 available.
+Cost and savings ranking uses the displayed signed amount, with unquantified savings last.
+Search, filters, charts and totals always use all matching records, including those outside
+the preview. **Download CSV · all matching** exports that entire set, with full resource IDs
+and original detail fields, for the selected cost dates. It never exports only the top preview.
+Amounts use the displayed cent precision, not raw sub-cent billing precision.
+The UTF-8 CSV quotes cells and neutralizes spreadsheet formulas in untrusted text while
+preserving numeric credits and unknown values. Downloads are browser-local and require the
+report host to permit downloads; full print/PDF remains available. No-JavaScript views and
+printing retain the full saved table. The existing 10 MB Live Report limit still applies to
+the complete embedded data: a short preview is not a license to truncate the source dataset.
 
 The inline [Microsoft Fluent System Icons](https://github.com/microsoft/fluentui-system-icons)
 are MIT-licensed; their notice and source revision are included in `fluent-icons.svg` and the

@@ -66,6 +66,16 @@ _DASHBOARD_SCRIPT = """
   const search = document.getElementById('table-search');
   const count = document.getElementById('search-count');
   const sectionSelect = document.getElementById('section-select');
+  const themeButtons = [...document.querySelectorAll('[data-theme-choice]')];
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    themeButtons.forEach(button => {
+      button.disabled = false;
+      button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme));
+    });
+  }
+  themeButtons.forEach(button => button.addEventListener('click', () => applyTheme(button.dataset.themeChoice)));
+  applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
   const money = cents => {
     const magnitude = Math.abs(cents);
     return (cents < 0 ? '-' : '') + '$' + Math.trunc(magnitude / 100).toLocaleString('en-US') +
@@ -114,8 +124,36 @@ _DASHBOARD_SCRIPT = """
     });
   }
   document.querySelectorAll('.resource-browser').forEach(browser => {
-    const state = {selected: new Map(), tones: new Map(), rows: [...browser.querySelectorAll('tbody tr[data-search]')]};
+    const state = {selected: new Map(), tones: new Map(), limit: 10,
+      rows: [...browser.querySelectorAll('tbody tr[data-search]')]};
     browsers.set(browser, state);
+    const limit = browser.querySelector('[data-resource-limit]');
+    limit.disabled = false;
+    limit.addEventListener('change', () => { state.limit = Number(limit.value); filter(); });
+    const download = browser.querySelector('.download-resources');
+    download.disabled = false;
+    download.addEventListener('click', () => {
+      const headings = JSON.parse(browser.dataset.exportColumns);
+      const values = state.rows.filter(row => matchesRow(state, row, search.value.toLocaleLowerCase().trim()));
+      const csvCell = value => {
+        let text = String(value);
+        if (/^-?\\$[\\d,]+\\.\\d{2}$/.test(text)) text = text.replace(/[$,]/g, '');
+        if (/^\\s*[=+@-]/.test(text) && !/^-?\\d+(\\.\\d+)?$/.test(text)) text = "'" + text;
+        return '"' + text.replace(/"/g, '""') + '"';
+      };
+      const lines = [headings, ...values.map(row => [
+        row.querySelector('.resource-identity summary').title,
+        ...[...row.nextElementSibling.querySelectorAll('.resource-detail-field:not(.resource-detail-id) dd')]
+          .map(cell => cell.textContent)
+      ])].map(cells => cells.map(csvCell).join(','));
+      const blob = new Blob(['\\ufeff' + lines.join('\\r\\n') + '\\r\\n'], {type: 'text/csv;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = browser.dataset.exportName; link.hidden = true;
+      document.body.append(link);
+      try { link.click(); }
+      finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    });
     browser.querySelectorAll('.resource-filter').forEach(dropdown => {
       dropdown.querySelectorAll('input').forEach(input => { input.disabled = false; });
       dropdown.addEventListener('change', event => {
@@ -150,8 +188,9 @@ _DASHBOARD_SCRIPT = """
         if (!button) return;
         const key = chart.dataset.dimension;
         const selected = state.selected.get(key);
-        if (selected?.size === 1 && selected.has(button.dataset.value)) state.selected.delete(key);
-        else state.selected.set(key, new Set([button.dataset.value]));
+        const values = button.dataset.values ? JSON.parse(button.dataset.values) : [button.dataset.value];
+        if (selectionEquals(selected, values)) state.selected.delete(key);
+        else state.selected.set(key, new Set(values));
         filter();
         [...chart.querySelectorAll('button')].find(item => item.dataset.value === button.dataset.value)?.focus();
       });
@@ -161,6 +200,26 @@ _DASHBOARD_SCRIPT = """
       filter();
     });
   });
+  function selectionEquals(selected, values) {
+    return selected?.size === values.length && values.every(value => selected.has(value));
+  }
+  function matchesRow(state, row, term, except) {
+    return row.dataset.periodPresent !== 'false' &&
+      row.dataset.search.toLocaleLowerCase().includes(term) &&
+      [...state.selected].every(([key, values]) => key === except || values.has(row.dataset[key]));
+  }
+  function compactEntries(entries) {
+    const result = entries.map(([name, group]) => [name, {...group, values: [name]}]);
+    if (result.length <= 6) return result;
+    const rest = result.slice(5);
+    let name = 'Other (' + rest.length + ')';
+    while (entries.some(([value]) => value === name)) name += ' combined';
+    const group = rest.reduce((sum, [, item]) => ({
+      total: sum.total + item.total, count: sum.count + item.count,
+      unknown: sum.unknown + item.unknown, values: [...sum.values, ...item.values]
+    }), {total: 0, count: 0, unknown: 0, values: []});
+    return [...result.slice(0, 5), [name, group]];
+  }
   function drawRegionPie(chart, entries, tones, selected) {
     const visual = chart.querySelector('.region-visual');
     visual.replaceChildren();
@@ -189,16 +248,17 @@ _DASHBOARD_SCRIPT = """
       110 + 100 * Math.sin(2 * Math.PI * fraction),
       110 - 100 * Math.cos(2 * Math.PI * fraction)
     ].join(' ');
-    entries.forEach(([value, group]) => {
+    compactEntries(entries).forEach(([value, group]) => {
       const share = group.total / total;
       if (!share) return;
       const path = document.createElementNS(ns, 'path');
       path.setAttribute('d', (share === 1 ? 'M ' : 'M 110 110 L ') + point(start) +
         ' A 100 100 0 0 1 ' + point(start + share / 2) +
         ' A 100 100 0 0 1 ' + point(start + share) + ' Z');
-      path.setAttribute('class', 'region-slice chart-tone-' + tones.get(value));
+      path.setAttribute('class', 'region-slice chart-tone-' + (group.values.length > 1 ? 'other' : tones.get(value)));
       path.dataset.value = value;
-      path.dataset.selected = String(selected?.has(value) || false);
+      path.dataset.values = JSON.stringify(group.values);
+      path.dataset.selected = String(selectionEquals(selected, group.values));
       const title = document.createElementNS(ns, 'title');
       title.textContent = value + ': ' + money(group.total) + ' (' + (share * 100).toFixed(1) + '%)';
       path.append(title);
@@ -222,14 +282,13 @@ _DASHBOARD_SCRIPT = """
       button.disabled = false;
       button.setAttribute('aria-pressed', String(!state.selected.has(button.dataset.filterAll)));
     });
-    const matches = (row, except) => row.dataset.periodPresent !== 'false' &&
-      row.dataset.search.toLocaleLowerCase().includes(term) &&
-      [...state.selected].every(([key, values]) => key === except || values.has(row.dataset[key]));
+    const matches = (row, except) => matchesRow(state, row, term, except);
     let total = 0, visible = 0, quantified = 0;
     state.rows.forEach(row => {
-      row.hidden = !matches(row);
+      const matched = matches(row);
+      row.hidden = !matched || visible >= state.limit;
       row.nextElementSibling.hidden = row.hidden;
-      if (!row.hidden) {
+      if (matched) {
         visible++;
         if (row.dataset.amount !== '') { total += Number(row.dataset.amount); quantified++; }
       }
@@ -237,7 +296,11 @@ _DASHBOARD_SCRIPT = """
     const totalLabel = visible && !quantified ? 'No quantified amount' : money(total);
     browser.querySelector('.breakdown-result').textContent =
       visible + ' records · ' + totalLabel + (quantified < visible ? ' · ' + (visible - quantified) + ' unquantified' : '') +
-      (state.selected.size ? ' · ' + [...state.selected.values()].map(values => [...values].join(', ')).join(' / ') : ' · All resources');
+      (state.selected.size ? ' · ' + [...state.selected.values()].map(values =>
+        values.size === 1 ? [...values][0] : values.size + ' selected').join(' / ') : ' · All resources');
+    browser.querySelector('.resource-preview-count').textContent =
+      'Showing ' + Math.min(visible, state.limit) + ' of ' + visible + ' matching records';
+    browser.querySelector('.download-resources').disabled = visible === 0;
     browser.querySelector('.clear-breakdown').disabled = state.selected.size === 0;
     browser.querySelector('.breakdown-empty').hidden = visible !== 0;
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
@@ -252,19 +315,23 @@ _DASHBOARD_SCRIPT = """
         groups.set(value, group);
       });
       const entries = [...groups].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
+      const compact = compactEntries(entries);
       const maximum = Math.max(1, ...entries.map(([, group]) => Math.abs(group.total)));
       const list = chart.querySelector('.breakdown-bars');
       list.replaceChildren();
       const region = chart.dataset.visualization === 'region-pie';
       const tones = state.tones.get(key);
       const pieTotal = region ? drawRegionPie(chart, entries, tones, state.selected.get(key)) : 0;
-      entries.forEach(([value, group]) => {
+      const appendButtons = (target, items) => items.forEach(([value, group]) => {
+        const values = group.values || [value];
+        const tone = values.length > 1 ? 'other' : tones.get(value);
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'chart-tone-' + tones.get(value);
-        button.dataset.tone = tones.get(value);
+        button.className = 'chart-tone-' + tone;
+        button.dataset.tone = tone;
         button.dataset.value = value;
-        button.setAttribute('aria-pressed', String(state.selected.get(key)?.has(value) || false));
+        button.dataset.values = JSON.stringify(values);
+        button.setAttribute('aria-pressed', String(selectionEquals(state.selected.get(key), values)));
         const name = document.createElement('span');
         name.className = 'breakdown-name';
         name.textContent = value;
@@ -274,17 +341,28 @@ _DASHBOARD_SCRIPT = """
         const detail = document.createElement('span');
         detail.className = 'breakdown-meta';
         detail.textContent = group.count + ' records' + (group.unknown ? ' · ' + group.unknown + ' unquantified' : '');
+        button.setAttribute('aria-label', value + ': ' + amount.textContent + ', ' + detail.textContent);
+        button.title = detail.textContent;
         const meter = document.createElement('meter');
         meter.min = 0; meter.max = maximum; meter.value = Math.abs(group.total);
         meter.setAttribute('aria-label', value + ' magnitude in USD cents');
         if (pieTotal) {
           const swatch = document.createElement('span');
-          swatch.className = 'region-swatch chart-tone-' + tones.get(value);
+          swatch.className = 'region-swatch chart-tone-' + tone;
           swatch.setAttribute('aria-hidden', 'true');
           button.append(swatch, name, amount, detail);
-        } else button.append(name, amount, meter, detail);
-        list.append(button);
+        } else if (values.length > 1) button.append(name, amount, detail);
+        else button.append(name, amount, meter, detail);
+        target.append(button);
       });
+      appendButtons(list, compact);
+      const all = chart.querySelector('.breakdown-all');
+      all.hidden = entries.length <= 6;
+      all.querySelector('summary').textContent = 'View all ' + entries.length + ' categories';
+      const full = all.querySelector('.breakdown-bars');
+      full.classList.toggle('region-legend', pieTotal > 0);
+      full.replaceChildren();
+      appendButtons(full, entries);
     });
     return visible;
   }
@@ -742,6 +820,19 @@ def _sections(model, heading_level=2, id_prefix="section"):
     return "".join(rendered)
 
 
+def _compact_breakdown(entries):
+    members = {value: [value] for value, _ in entries}
+    if len(entries) <= 6:
+        return entries, members
+    rest = entries[5:]
+    label = f"Other ({len(rest)})"
+    while label in members:
+        label += " combined"
+    members[label] = [value for value, _ in rest]
+    totals = tuple(sum(group[index] for _, group in rest) for index in range(3))
+    return entries[:5] + [(label, totals)], members
+
+
 def _region_pie(entries, tones):
     """Keep credits signed rather than turn negative regional totals into pie shares."""
     signed = any(amount < 0 for _, (amount, _, _) in entries)
@@ -753,15 +844,17 @@ def _region_pie(entries, tones):
     paths, start = [], 0
     def point(fraction):
         return f"{110 + 100 * math.sin(2 * math.pi * fraction):.6f} {110 - 100 * math.cos(2 * math.pi * fraction):.6f}"
-    for value, (amount, _, _) in entries:
+    compact, members = _compact_breakdown(entries)
+    for value, (amount, _, _) in compact:
         share = amount / total
         if not share:
             continue
         path = (f'{"M" if share == 1 else "M 110 110 L"} {point(start)} A 100 100 0 0 1 {point(start + share / 2)} '
                 f"A 100 100 0 0 1 {point(start + share)} Z")
         paths.append(
-            f'<path class="region-slice chart-tone-{tones[value]}" d="{path}" '
-            f'data-value="{_escape(value)}" data-selected="false"><title>'
+            f'<path class="region-slice chart-tone-{tones.get(value, "other")}" d="{path}" '
+            f'data-value="{_escape(value)}" data-values="{_escape(json.dumps(members[value]))}" '
+            f'data-selected="false"><title>'
             f'{_escape(value)}: {_usd(amount)} ({share * 100:.1f}%)</title></path>'
         )
         start += share
@@ -794,8 +887,11 @@ def _resource_browser(section, id_prefix="resource"):
         for index, record in enumerate(history_records or [])
     }
     rows = section["rows"]
-    if not savings:
-        rows = sorted(rows, key=lambda row: -Decimal(row[config["amount"]].replace("$", "").replace(",", "")))
+    rows = sorted(rows, key=lambda row: (
+        row[config["amount"]] == "\u2014",
+        -Decimal(row[config["amount"]].replace("$", "").replace(",", ""))
+        if row[config["amount"]] != "\u2014" else Decimal(0),
+    ))
     for row_index, row in enumerate(rows):
         history_record = history_lookup.get(resource_key(row[:6])) if history_records is not None else None
         if history_records is not None and history_record is None:
@@ -880,32 +976,47 @@ def _resource_browser(section, id_prefix="resource"):
         tones = _chart_tones(all_values[index])
         pie, pie_total = _region_pie(entries, tones) if region else ("", 0)
         maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
-        bars = []
-        for value, (amount, count, missing) in entries:
-            indicator = (
-                f'<span class="region-swatch chart-tone-{tones[value]}" aria-hidden="true"></span>'
-                if pie_total else ""
-            )
-            meter = (
-                f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
-                if not pie_total else ""
-            )
-            percentage = f" · {amount / pie_total * 100:.1f}%" if pie_total else ""
-            bars.append(
-                f'<button type="button" class="chart-tone-{tones[value]}" data-tone="{tones[value]}" '
-                f'data-value="{_escape(value)}" aria-pressed="false" disabled>'
-                f'{indicator}'
-                f'<span class="breakdown-name">{_escape(value)}</span><strong>'
-                f'{"Not quantified" if missing == count else _usd(amount)}{percentage}</strong>{meter}'
-                f'<span class="breakdown-meta">{count} records'
-                + (f" · {missing} unquantified" if missing else "") + "</span></button>"
-            )
-        chart_body = f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">{"".join(bars)}</div>'
+        compact, members = _compact_breakdown(entries)
+
+        def render_buttons(items):
+            bars = []
+            for value, (amount, count, missing) in items:
+                tone = tones.get(value, "other")
+                values = members[value]
+                indicator = (
+                    f'<span class="region-swatch chart-tone-{tone}" aria-hidden="true"></span>'
+                    if pie_total else ""
+                )
+                meter = (
+                    f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
+                    if not pie_total and len(values) == 1 else ""
+                )
+                percentage = f" · {amount / pie_total * 100:.1f}%" if pie_total else ""
+                bars.append(
+                    f'<button type="button" class="chart-tone-{tone}" data-tone="{tone}" '
+                    f'data-value="{_escape(value)}" data-values="{_escape(json.dumps(values))}" '
+                    f'aria-label="{_escape(value)}: {_escape("Not quantified" if missing == count else _usd(amount))}, '
+                    f'{count} records" title="{count} records" aria-pressed="false" disabled>{indicator}'
+                    f'<span class="breakdown-name">{_escape(value)}</span><strong>'
+                    f'{"Not quantified" if missing == count else _usd(amount)}{percentage}</strong>{meter}'
+                    f'<span class="breakdown-meta">{count} records'
+                    + (f" · {missing} unquantified" if missing else "") + "</span></button>"
+                )
+            return "".join(bars)
+
+        bars = render_buttons(compact)
+        chart_body = f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">{bars}</div>'
         if region:
             chart_body = (
                 f'<div class="region-layout{"" if pie_total else " is-fallback"}">'
                 f'<div class="region-visual">{pie}</div>{chart_body}</div>'
             )
+        chart_body += (
+            f'<details class="breakdown-all"{" hidden" if len(entries) <= 6 else ""}>'
+            f'<summary>View all {len(entries)} categories</summary>'
+            f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">'
+            f'{render_buttons(entries)}</div></details>'
+        )
         charts.append(
             f'<div class="breakdown-chart" data-dimension="d{index}"'
             + f' data-tone-map="{_escape(json.dumps(tones, ensure_ascii=True))}"'
@@ -933,7 +1044,10 @@ def _resource_browser(section, id_prefix="resource"):
             )
         filter_html = '<div class="resource-filters" role="group" aria-label="Cost explorer filters">' + "".join(controls) + "</div>"
     return (
-        f'<section class="resource-browser"><h3>{_escape(section["title"])}</h3>'
+        f'<section class="resource-browser" '
+        f'data-export-columns="{_escape(json.dumps(section["columns"] + ([] if savings else ["Resource type"])))}" '
+        f'data-export-name="finops-{"savings" if savings else "resource-costs"}.csv">'
+        f'<h3>{_escape(section["title"])}</h3>'
         f'<p class="section-description">{_escape(section["description"])}</p>'
         f'{filter_html}'
         '<p class="breakdown-instructions">Select a bar, pie slice or region label to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
@@ -942,6 +1056,15 @@ def _resource_browser(section, id_prefix="resource"):
         f'{visible_records} records · {"No quantified amount" if visible_records and unknown == visible_records else _usd(total)}'
         + (f" · {unknown} unquantified" if unknown else "") +
         '</p><button type="button" class="clear-breakdown" disabled>Clear filters</button></div>'
+        '<div class="resource-preview-toolbar"><label>Show top '
+        '<select data-resource-limit disabled aria-label="Number of resource records to show">'
+        '<option value="10">10</option><option value="25">25</option><option value="50">50</option>'
+        '</select> records</label>'
+        f'<span class="resource-preview-count" role="status">{visible_records} records in the saved table</span>'
+        '<button type="button" class="download-resources" disabled>Download CSV · all matching</button></div>'
+        '<p class="resource-export-note">Search and totals include every matching record, not just the preview. '
+        'CSV includes full resource IDs and details; amounts use displayed cent precision. '
+        'Downloads require permission from the report host.</p>'
         f'<p class="breakdown-empty"{ " hidden" if visible_records else ""}>No records match these filters.</p>'
         '<p class="breakdown-print-note">Complete saved resource detail; interactive filters are not applied to print.</p>'
         '<div class="table-wrap" role="region" tabindex="0" aria-label="' + _escape(section["title"]) + ' table">'
@@ -1406,7 +1529,11 @@ def render_report(model):
             '<span class="appbar-divider" aria-hidden="true">/</span>'
             '<span>Cost intelligence</span></div>'
             f'<div class="appbar-context">{_icon("clock")}<span>Scheduled snapshot</span>'
-            '<span class="snapshot-label">Saved report</span></div></div>'
+            '<span class="snapshot-label">Saved report</span></div>'
+            '<div class="theme-switch" role="group" aria-label="Color theme">'
+            '<button type="button" data-theme-choice="light" aria-pressed="false" disabled>Light</button>'
+            '<button type="button" data-theme-choice="dark" aria-pressed="false" disabled>Dark</button>'
+            '</div></div>'
         )
         content = _dashboard(model, intro)
         warning_html = ""

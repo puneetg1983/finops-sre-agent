@@ -478,6 +478,39 @@ def test_region_pie_shows_exact_shares_and_omits_zero_slices():
     assert "(100.0%)" in single and "M 110 110 L" not in single
 
 
+def test_large_breakdown_preserves_other_members_and_signed_region_costs():
+    entries = [(f"region-{index}", (100 - index, 2, 0)) for index in range(12)]
+    compact, members = renderer._compact_breakdown(entries)
+    assert len(compact) == 6
+    label, group = compact[-1]
+    assert members[label] == [name for name, _ in entries[5:]]
+    assert group == (sum(row[0] for _, row in entries[5:]), 14, 0)
+    assert sum(row[0] for _, row in compact) == sum(row[0] for _, row in entries)
+    markup, total = renderer._region_pie(entries, renderer._chart_tones(name for name, _ in entries))
+    assert markup.count("<path ") == 6 and total == sum(row[0] for _, row in entries)
+    assert 'data-values=' in markup and "Other (7)" in markup
+    signed = entries[:-1] + [("credit", (-1, 1, 0))]
+    markup, total = renderer._region_pie(signed, renderer._chart_tones(name for name, _ in signed))
+    assert "credits" in markup and total == 0 and "<svg" not in markup
+
+
+def test_resource_preview_retains_full_source_and_csv_fields():
+    rows = [
+        {"resourceId": SCOPE + f"/providers/Microsoft.Compute/virtualMachines/vm-{index}",
+         "subscriptionId": "sub", "resourceGroup": "managed", "serviceName": f"Service {index}",
+         "resourceLocation": f"Region {index % 12}", "chargeType": "Usage", "cost_usd": index}
+        for index in range(80)
+    ]
+    output = renderer.render_report(build({"explorer": envelope(rows)}))
+    assert output.count("data-search=") == 80
+    assert 'data-resource-limit disabled' in output
+    assert "Download CSV · all matching" in output
+    assert 'data-export-columns=' in output and 'data-export-name="finops-resource-costs.csv"' in output
+    assert 'data-theme-choice="light"' in output and 'data-theme-choice="dark"' in output
+    assert "connect-src 'none'" in output
+    assert re.findall(r'data-amount="(\d+)"', output) == [str(index * 100) for index in range(79, -1, -1)]
+
+
 @pytest.mark.parametrize("entries,message", [
     ([], "No positive regional cost"),
     ([("East", [0, 1, 0])], "No positive regional cost"),
