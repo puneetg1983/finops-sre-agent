@@ -13,7 +13,16 @@ Azure service symbols and an expandable data table. The heading retains **FinOps
 with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
 authenticated SRE Agent portal or a claim of Microsoft endorsement.
 
-Cost explorer uses linked service and region bar breakdowns above a compact resource table.
+Cost explorer uses linked service bars and a region pie chart above a compact resource table.
+Pie slices and region legend buttons filter the resource list; the legend shows amounts and
+percentages. Chart panels grow with their contents rather than using internal scrollbars.
+Regional totals containing negative credits use signed bars instead of misleading pie shares;
+zero or empty totals show an explicit no-cost message. Region colors stay stable while filtering.
+At the top of Cost explorer, Subscription, Resource type and Region dropdowns default to **All**.
+Choose any combination to filter the charts and resource list together; each adjacent All button
+clears just that dimension. Pie/legend selection and the Region dropdown share the same selection.
+Resource type is derived from the ARM resource ID (including nested and extension resources);
+unidentifiable types remain `(unknown)`, not guessed from a service name.
 Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines
 filters; search also filters the breakdowns and totals. Clear filters resets the bar selections,
 not the search field. Resource names expand to show full IDs and every original field.

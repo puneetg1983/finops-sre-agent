@@ -69,9 +69,23 @@ _DASHBOARD_SCRIPT = """
   document.querySelectorAll('.resource-browser').forEach(browser => {
     const state = {selected: new Map(), rows: [...browser.querySelectorAll('tbody tr')]};
     browsers.set(browser, state);
+    browser.querySelectorAll('select[data-filter]').forEach(select => {
+      select.disabled = false;
+      select.addEventListener('change', () => {
+        if (select.value) state.selected.set(select.dataset.filter, select.value);
+        else state.selected.delete(select.dataset.filter);
+        filter();
+      });
+    });
+    browser.querySelectorAll('[data-filter-all]').forEach(button => {
+      button.addEventListener('click', () => {
+        state.selected.delete(button.dataset.filterAll);
+        filter();
+      });
+    });
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
       chart.addEventListener('click', event => {
-        const button = event.target.closest('button[data-value]');
+        const button = event.target.closest('[data-value]');
         if (!button) return;
         const key = chart.dataset.dimension;
         if (state.selected.get(key) === button.dataset.value) state.selected.delete(key);
@@ -85,8 +99,62 @@ _DASHBOARD_SCRIPT = """
       filter();
     });
   });
+  function drawRegionPie(chart, entries, tones, selected) {
+    const visual = chart.querySelector('.region-visual');
+    visual.replaceChildren();
+    const signed = entries.some(([, group]) => group.total < 0);
+    const total = entries.reduce((sum, [, group]) => sum + group.total, 0);
+    const hasPie = !signed && total > 0;
+    chart.querySelector('.region-layout').classList.toggle('is-fallback', !hasPie);
+    chart.querySelector('.breakdown-bars').classList.toggle('region-legend', hasPie);
+    if (!hasPie) {
+      const note = document.createElement('p');
+      note.className = 'region-note';
+      note.textContent = signed ?
+        'Regional totals include credits. Signed amounts are shown instead of a pie.' :
+        'No positive regional cost to display.';
+      visual.append(note);
+      return 0;
+    }
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 220 220');
+    svg.setAttribute('class', 'region-pie');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'Regional cost share');
+    let start = 0;
+    const point = fraction => [
+      110 + 100 * Math.sin(2 * Math.PI * fraction),
+      110 - 100 * Math.cos(2 * Math.PI * fraction)
+    ].join(' ');
+    entries.forEach(([value, group]) => {
+      const share = group.total / total;
+      if (!share) return;
+      const path = document.createElementNS(ns, 'path');
+      path.setAttribute('d', (share === 1 ? 'M ' : 'M 110 110 L ') + point(start) +
+        ' A 100 100 0 0 1 ' + point(start + share / 2) +
+        ' A 100 100 0 0 1 ' + point(start + share) + ' Z');
+      path.setAttribute('class', 'region-slice region-tone-' + tones.get(value));
+      path.dataset.value = value;
+      path.dataset.selected = String(selected === value);
+      const title = document.createElementNS(ns, 'title');
+      title.textContent = value + ': ' + money(group.total) + ' (' + (share * 100).toFixed(1) + '%)';
+      path.append(title);
+      svg.append(path);
+      start += share;
+    });
+    visual.append(svg);
+    return total;
+  }
   function updateBrowser(browser, term) {
     const state = browsers.get(browser);
+    browser.querySelectorAll('select[data-filter]').forEach(select => {
+      select.value = state.selected.get(select.dataset.filter) || '';
+      select.title = select.value || 'All';
+    });
+    browser.querySelectorAll('[data-filter-all]').forEach(button => {
+      button.disabled = !state.selected.has(button.dataset.filterAll);
+    });
     const matches = (row, except) => row.dataset.search.toLocaleLowerCase().includes(term) &&
       [...state.selected].every(([key, value]) => key === except || row.dataset[key] === value);
     let total = 0, visible = 0, quantified = 0;
@@ -118,6 +186,10 @@ _DASHBOARD_SCRIPT = """
       const maximum = Math.max(1, ...entries.map(([, group]) => Math.abs(group.total)));
       const list = chart.querySelector('.breakdown-bars');
       list.replaceChildren();
+      const region = chart.dataset.visualization === 'region-pie';
+      const tones = region ? new Map([...new Set(state.rows.map(row => row.dataset[key]))].sort()
+        .map((value, index) => [value, index % 8])) : null;
+      const pieTotal = region ? drawRegionPie(chart, entries, tones, state.selected.get(key)) : 0;
       entries.forEach(([value, group]) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -128,13 +200,19 @@ _DASHBOARD_SCRIPT = """
         name.textContent = value;
         const amount = document.createElement('strong');
         amount.textContent = group.unknown === group.count ? 'Not quantified' : money(group.total);
+        if (pieTotal) amount.textContent += ' · ' + (group.total / pieTotal * 100).toFixed(1) + '%';
         const detail = document.createElement('span');
         detail.className = 'breakdown-meta';
         detail.textContent = group.count + ' records' + (group.unknown ? ' · ' + group.unknown + ' unquantified' : '');
         const meter = document.createElement('meter');
         meter.min = 0; meter.max = maximum; meter.value = Math.abs(group.total);
         meter.setAttribute('aria-label', value + ' magnitude in USD cents');
-        button.append(name, amount, meter, detail);
+        if (pieTotal) {
+          const swatch = document.createElement('span');
+          swatch.className = 'region-swatch region-tone-' + tones.get(value);
+          swatch.setAttribute('aria-hidden', 'true');
+          button.append(swatch, name, amount, detail);
+        } else button.append(name, amount, meter, detail);
         list.append(button);
       });
     });
@@ -298,6 +376,36 @@ def _sections(model, heading_level=2):
     return "".join(rendered)
 
 
+def _region_pie(entries, tones):
+    """Keep credits signed rather than turn negative regional totals into pie shares."""
+    signed = any(amount < 0 for _, (amount, _, _) in entries)
+    total = sum(amount for _, (amount, _, _) in entries)
+    if signed or total <= 0:
+        message = ("Regional totals include credits. Signed amounts are shown instead of a pie."
+                   if signed else "No positive regional cost to display.")
+        return f'<p class="region-note">{message}</p>', 0
+    paths, start = [], 0
+    def point(fraction):
+        return f"{110 + 100 * math.sin(2 * math.pi * fraction):.6f} {110 - 100 * math.cos(2 * math.pi * fraction):.6f}"
+    for value, (amount, _, _) in entries:
+        share = amount / total
+        if not share:
+            continue
+        path = (f'{"M" if share == 1 else "M 110 110 L"} {point(start)} A 100 100 0 0 1 {point(start + share / 2)} '
+                f"A 100 100 0 0 1 {point(start + share)} Z")
+        paths.append(
+            f'<path class="region-slice region-tone-{tones[value]}" d="{path}" '
+            f'data-value="{_escape(value)}" data-selected="false"><title>'
+            f'{_escape(value)}: {_usd(amount)} ({share * 100:.1f}%)</title></path>'
+        )
+        start += share
+    return (
+        '<svg class="region-pie" viewBox="0 0 220 220" role="img" '
+        'aria-label="Regional cost share">'
+        + "".join(paths) + "</svg>", total
+    )
+
+
 def _resource_browser(section):
     """Render compact identities and faceted, exact-cent breakdowns from adapter tables."""
     config = section["breakdown"]
@@ -307,6 +415,7 @@ def _resource_browser(section):
     body = []
     total = 0
     unknown = 0
+    filter_values = {"subscription": set(), "type": set(), "d1": set()}
     rows = section["rows"]
     if not savings:
         rows = sorted(rows, key=lambda row: -Decimal(row[config["amount"]].replace("$", "").replace(",", "")))
@@ -328,6 +437,15 @@ def _resource_browser(section):
             group[1] += 1
             group[2] += cents is None
         identity = str(row[0])
+        resource_type = _resource_type_from_id(identity) if not savings else str(row[1])
+        if not savings:
+            subscription = str(row[1]).strip() or "(unknown)"
+            type_label = _resource_type_label(resource_type)
+            attrs.extend([f'data-subscription="{_escape(subscription)}"',
+                          f'data-type="{_escape(type_label)}"'])
+            for key, value in (("subscription", subscription), ("type", type_label),
+                               ("d1", str(row[4]).strip() or "(unknown)")):
+                filter_values[key].add(value)
         name = identity.rstrip("/").rsplit("/", 1)[-1] or "(unknown)"
         segments = identity.split("/")
         group_name = next((segments[i + 1] for i, part in enumerate(segments[:-1])
@@ -336,6 +454,8 @@ def _resource_browser(section):
             f"<dt>{_escape(label)}</dt><dd>{_escape(value)}</dd>"
             for label, value in zip(section["columns"], row)
         )
+        if not savings:
+            details += f'<dt>Resource type</dt><dd>{_escape(resource_type)}</dd>'
         identity_html = (
             f'<details class="resource-identity"><summary title="{_escape(identity)}">'
             f'{_icon(_service_icon(row[1] if savings else row[3]))}'
@@ -354,28 +474,63 @@ def _resource_browser(section):
         )
     charts = []
     for index, (label, _) in enumerate(dimensions):
+        region = not savings and index == 1
+        entries = sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0]))
+        tones = {value: i % 8 for i, value in enumerate(sorted(groups[index]))}
+        pie, pie_total = _region_pie(entries, tones) if region else ("", 0)
         maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
         bars = []
-        for value, (amount, count, missing) in sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0])):
+        for value, (amount, count, missing) in entries:
+            indicator = (
+                f'<span class="region-swatch region-tone-{tones[value]}" aria-hidden="true"></span>'
+                if pie_total else ""
+            )
+            meter = (
+                f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
+                if not pie_total else ""
+            )
+            percentage = f" · {amount / pie_total * 100:.1f}%" if pie_total else ""
             bars.append(
                 f'<button type="button" data-value="{_escape(value)}" aria-pressed="false" disabled>'
+                f'{indicator}'
                 f'<span class="breakdown-name">{_escape(value)}</span><strong>'
-                f'{"Not quantified" if missing == count else _usd(amount)}</strong>'
-                f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
+                f'{"Not quantified" if missing == count else _usd(amount)}{percentage}</strong>{meter}'
                 f'<span class="breakdown-meta">{count} records'
                 + (f" · {missing} unquantified" if missing else "") + "</span></button>"
             )
+        chart_body = f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">{"".join(bars)}</div>'
+        if region:
+            chart_body = (
+                f'<div class="region-layout{"" if pie_total else " is-fallback"}">'
+                f'<div class="region-visual">{pie}</div>{chart_body}</div>'
+            )
         charts.append(
-            f'<div class="breakdown-chart" data-dimension="d{index}"><h4>By {_escape(label.lower())}</h4>'
-            f'<div class="breakdown-bars">{"".join(bars)}</div></div>'
+            f'<div class="breakdown-chart" data-dimension="d{index}"'
+            + (' data-visualization="region-pie"' if region else "") +
+            f'><h4>By {_escape(label.lower())}</h4>{chart_body}</div>'
         )
     columns = ["Resource name", "Resource type", "Recommended action", "Monthly savings", "Validation"] if savings else [
         "Resource name", "Service", "Region", "Cost (USD)",
     ]
+    filter_html = ""
+    if not savings:
+        controls = []
+        for key, label in (("subscription", "Subscription"), ("type", "Resource type"), ("d1", "Region")):
+            options = "".join(
+                f'<option value="{_escape(value)}">{_escape(value)}</option>'
+                for value in sorted(filter_values[key])
+            )
+            controls.append(
+                f'<div class="resource-filter"><label><span>{label}</span>'
+                f'<select aria-label="{label}" data-filter="{key}" disabled><option value="">All</option>{options}</select></label>'
+                f'<button type="button" data-filter-all="{key}" aria-label="{label}: All" disabled>All</button></div>'
+            )
+        filter_html = '<div class="resource-filters" role="group" aria-label="Cost explorer filters">' + "".join(controls) + "</div>"
     return (
         f'<section class="resource-browser"><h3>{_escape(section["title"])}</h3>'
         f'<p class="section-description">{_escape(section["description"])}</p>'
-        '<p class="breakdown-instructions">Select a bar to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
+        f'{filter_html}'
+        '<p class="breakdown-instructions">Select a bar, pie slice or region label to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
         f'<div class="breakdown-grid">{"".join(charts)}</div>'
         '<div class="breakdown-toolbar"><p class="breakdown-result" role="status">'
         f'{len(body)} records · {"No quantified amount" if body and unknown == len(body) else _usd(total)}'
@@ -404,6 +559,17 @@ def _resource_type_label(value):
         "microsoft.sql/servers/databases": "SQL databases",
         "microsoft.containerservice/managedclusters": "Kubernetes clusters",
     }.get(value.casefold(), value or "(unknown)")
+
+
+def _resource_type_from_id(identity):
+    parts = identity.strip("/").split("/")
+    providers = [i for i, part in enumerate(parts) if i % 2 == 0 and part.casefold() == "providers"]
+    if not providers:
+        return "(unknown)"
+    resource = parts[providers[-1] + 1:]
+    if len(resource) < 3 or len(resource) % 2 == 0 or not all(resource):
+        return "(unknown)"
+    return "/".join([resource[0], *resource[1::2]]).casefold()
 
 
 def _service_icon(value):

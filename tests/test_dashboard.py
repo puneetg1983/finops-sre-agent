@@ -296,6 +296,68 @@ def test_explorer_breakdowns_keep_short_names_full_details_and_signed_cents():
     assert 'max="70" value="70"' in output
 
 
+def test_region_pie_shows_exact_shares_and_omits_zero_slices():
+    markup, total = renderer._region_pie(
+        [("East <US>", [3000, 1, 0]), ("West", [1000, 1, 0]), ("Zero", [0, 1, 0])],
+        {"East <US>": 0, "West": 1, "Zero": 2},
+    )
+    pie = ET.fromstring(markup)
+    assert total == 4000
+    assert len(pie.findall("path")) == 2
+    assert pie.findall("path")[0].find("title").text == "East <US>: $30.00 (75.0%)"
+    assert pie.findall("path")[1].find("title").text == "West: $10.00 (25.0%)"
+    assert all(path.attrib["d"].count("A 100 100") == 2 for path in pie.findall("path"))
+    assert 'data-value="East &lt;US&gt;"' in markup
+    single, _ = renderer._region_pie([("East", [1, 1, 0])], {"East": 0})
+    assert "(100.0%)" in single and "M 110 110 L" not in single
+
+
+@pytest.mark.parametrize("entries,message", [
+    ([], "No positive regional cost"),
+    ([("East", [0, 1, 0])], "No positive regional cost"),
+    ([("East", [3000, 1, 0]), ("West", [-1000, 1, 0])], "Signed amounts"),
+])
+def test_region_pie_never_invents_shares_for_empty_zero_or_negative_totals(entries, message):
+    markup, total = renderer._region_pie(entries, {})
+    assert message in markup
+    assert total == 0
+    assert "<svg" not in markup
+
+
+@pytest.mark.parametrize("suffix,expected", [
+    ("/providers/Microsoft.Compute/virtualMachines/vm", "microsoft.compute/virtualmachines"),
+    ("/providers/Microsoft.Compute/virtualMachines/providers", "microsoft.compute/virtualmachines"),
+    ("/providers/Microsoft.Sql/servers/sql/databases/db", "microsoft.sql/servers/databases"),
+    ("/providers/Microsoft.Compute/virtualMachines/vm/providers/Microsoft.Insights/diagnosticSettings/logs",
+     "microsoft.insights/diagnosticsettings"),
+    ("/providers/Microsoft.Compute/virtualMachines", "(unknown)"),
+    ("", "(unknown)"),
+])
+def test_explorer_resource_type_uses_arm_types_not_resource_names(suffix, expected):
+    assert renderer._resource_type_from_id(SCOPE + suffix) == expected
+
+
+def test_explorer_dropdowns_keep_all_dimensions_and_escape_options():
+    rows = [
+        {"resourceId": SCOPE + "/providers/Microsoft.Compute/virtualMachines/vm",
+         "subscriptionId": 'sub<one>', "serviceName": "Virtual Machines",
+         "resourceGroup": "managed", "chargeType": "Usage",
+         "resourceLocation": "East US", "cost_usd": 3},
+        {"resourceId": "(unknown)", "subscriptionId": "sub-two",
+         "resourceGroup": "(unknown)", "chargeType": "Usage",
+         "serviceName": "Storage", "resourceLocation": "West Europe", "cost_usd": 1},
+    ]
+    output = renderer._resource_browser(tab(build({"explorer": envelope(rows)}), "explorer")["sections"][0])
+    assert re.findall(r'data-filter="([^"]+)" disabled>', output) == ["subscription", "type", "d1"]
+    assert output.count('<option value="">All</option>') == 3
+    assert output.count('data-filter-all=') == 3
+    assert 'data-subscription="sub&lt;one&gt;" data-type="Virtual machines"' in output
+    assert '<option value="sub&lt;one&gt;">sub&lt;one&gt;</option>' in output
+    assert '<option value="(unknown)">(unknown)</option>' in output
+    assert '<strong>$3.00 · 75.0%</strong>' in output
+    assert 'data-visualization="region-pie"' in output
+
+
 def test_savings_breakdowns_preserve_unknowns_evidence_and_validation():
     findings = [
         {"resourceId": SCOPE + "/providers/Microsoft.Compute/virtualMachines/vm-one",
