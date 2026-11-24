@@ -69,7 +69,8 @@ with a single subscription-wide list.
 
 **Primary: ARM MCP `list_budgets`.** For every de-duplicated query target (each configured
 management group, each subscription, and each resource-group effective scope), call the ARM MCP
-`*_list_budgets` tool with `{"scope": "<TARGET_SCOPE>"}`, sequentially, and convert each result with
+`*_list_budgets` tool with `{"scope": "<TARGET_SCOPE>"}`. Dispatch these read-only calls concurrently
+in batches of at most four in the same tool-call turn (not one at a time), and convert each result with
 the bundled parser instead of reading rows by hand:
 
 ```python

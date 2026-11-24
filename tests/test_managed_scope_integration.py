@@ -214,6 +214,8 @@ def test_agent_manifest_enables_managed_scope_without_write_tools():
     assert "strict and fail-closed" in instructions
     assert "subsequent turn" in instructions
     assert "broad rbac" in instructions
+    assert "bounded parallel batches from batch_cost_queries" in instructions
+    assert "plans them, sequentially" not in instructions
     assert properties["tools"] == [
         "RunAzCliReadCommands",
         "ExecutePythonCode",
