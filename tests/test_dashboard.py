@@ -506,7 +506,16 @@ def test_resource_preview_retains_full_source_and_csv_fields():
     output = renderer.render_report(build({"explorer": envelope(rows)}))
     assert output.count("data-search=") == 80
     assert 'data-resource-limit disabled' in output
-    assert "Download CSV · all matching" in output
+    assert "Export CSV · all matching" in output
+    service_filter = re.search(r'<details class="resource-filter" data-filter="d0">(.*?)</details>',
+                               output, re.DOTALL).group(1)
+    assert set(re.findall(r'data-filter-option value="([^"]+)"', service_filter)) == {
+        f"Service {index}" for index in range(80)
+    }
+    assert '<textarea readonly aria-label="CSV data"' in output
+    assert 'class="csv-preview" hidden' in output
+    assert 'id="print-help" hidden' in output
+    assert 'id="clear-report-filters"' in output
     assert 'data-export-columns=' in output and 'data-export-name="finops-resource-costs.csv"' in output
     assert 'data-theme-choice="light"' in output and 'data-theme-choice="dark"' in output
     assert "style=" not in output
@@ -560,9 +569,9 @@ def test_explorer_dropdowns_keep_all_dimensions_and_escape_options():
          "serviceName": "Storage", "resourceLocation": "West Europe", "cost_usd": 1},
     ]
     output = renderer._resource_browser(tab(build({"explorer": envelope(rows)}), "explorer")["sections"][0])
-    assert re.findall(r'<details class="resource-filter" data-filter="([^"]+)">', output) == ["subscription", "type", "d1"]
-    assert output.count('<strong class="filter-selection">All</strong>') == 3
-    assert output.count('data-filter-all=') == 3
+    assert re.findall(r'<details class="resource-filter" data-filter="([^"]+)">', output) == ["d0", "subscription", "type", "d1"]
+    assert output.count('<strong class="filter-selection">All</strong>') == 4
+    assert output.count('data-filter-all=') == 4
     assert 'data-subscription="sub&lt;one&gt;" data-type="Virtual machines"' in output
     assert 'data-filter-option value="sub&lt;one&gt;" disabled><span>sub&lt;one&gt;</span>' in output
     assert 'data-filter-option value="(unknown)" disabled><span>(unknown)</span>' in output

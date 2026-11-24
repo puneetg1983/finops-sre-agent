@@ -23,8 +23,11 @@ Opening the saved report makes no Azure calls.
 The dashboard includes Light/Dark buttons, full-width signed column charts with drillable Other
 and switchable groupings (no pie or expandable category lists),
 top 10/25/50 record previews and local CSV export of every matching record. Preview limits
-must never change financial totals, full-dataset search or exports. The report host must
-allow downloads; complete print/PDF and no-JavaScript tables remain available.
+must never change financial totals, full-dataset search or exports. Service dropdowns include
+every saved category, not just Overview's top 15. Cost rows are not a resource inventory.
+Embedded Live Reports block downloads and print dialogs: CSV remains selectable text and
+Print opens a complete print view with local-HTML download instructions. Locally opened HTML
+supports direct CSV downloads and print/PDF; no-JavaScript tables remain available.
 
 Use this utility after a FinOps analysis helper has produced structured results. Build a report
 model with the matching adapter in `models.py`, call `render_report` or `write_report` from

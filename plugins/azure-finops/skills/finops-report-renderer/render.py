@@ -158,13 +158,28 @@ _DASHBOARD_SCRIPT = """
         ...[...row.nextElementSibling.querySelectorAll('.resource-detail-field:not(.resource-detail-id) dd')]
           .map(cell => cell.textContent)
       ])].map(cells => cells.map(csvCell).join(','));
-      const blob = new Blob(['\\ufeff' + lines.join('\\r\\n') + '\\r\\n'], {type: 'text/csv;charset=utf-8'});
+      const csv = '\\ufeff' + lines.join('\\r\\n') + '\\r\\n';
+      const preview = browser.querySelector('.csv-preview');
+      preview.hidden = false;
+      preview.querySelector('textarea').value = csv;
+      preview.querySelector('textarea').focus();
+      if (window.self !== window.top) return;
+      const blob = new Blob([csv], {type: 'text/csv;charset=utf-8'});
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = browser.dataset.exportName; link.hidden = true;
       document.body.append(link);
       try { link.click(); }
       finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    });
+    browser.querySelector('.select-csv').addEventListener('click', () => {
+      const text = browser.querySelector('.csv-preview textarea');
+      text.focus();
+      text.select();
+    });
+    browser.querySelector('.close-csv').addEventListener('click', () => {
+      browser.querySelector('.csv-preview').hidden = true;
+      download.focus();
     });
     browser.querySelectorAll('.resource-filter').forEach(dropdown => {
       dropdown.querySelectorAll('input').forEach(input => { input.disabled = false; });
@@ -231,6 +246,7 @@ _DASHBOARD_SCRIPT = """
     browser.querySelector('.clear-breakdown').addEventListener('click', () => {
       state.selected.clear();
       state.drill.clear();
+      search.value = '';
       filter();
     });
   });
@@ -325,6 +341,7 @@ _DASHBOARD_SCRIPT = """
     });
   }
   function updateBrowser(browser, term) {
+    browser.querySelector('.csv-preview').hidden = true;
     const state = browsers.get(browser);
     browser.querySelectorAll('.resource-filter').forEach(dropdown => {
       const selected = state.selected.get(dropdown.dataset.filter);
@@ -357,7 +374,7 @@ _DASHBOARD_SCRIPT = """
     browser.querySelector('.resource-preview-count').textContent =
       'Showing ' + Math.min(visible, state.limit) + ' of ' + visible + ' matching records';
     browser.querySelector('.download-resources').disabled = visible === 0;
-    browser.querySelector('.clear-breakdown').disabled = state.selected.size === 0;
+    browser.querySelector('.clear-breakdown').disabled = state.selected.size === 0 && !term;
     browser.querySelector('.breakdown-empty').hidden = visible !== 0;
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
       const key = chart.dataset.dimension;
@@ -415,12 +432,39 @@ _DASHBOARD_SCRIPT = """
   });
   sectionSelect.addEventListener('change', () => select(Number(sectionSelect.value), false));
   search.addEventListener('input', filter);
+  document.getElementById('clear-report-filters').addEventListener('click', () => {
+    search.value = '';
+    browsers.forEach(state => { state.selected.clear(); state.drill.clear(); });
+    filter();
+  });
+  document.querySelectorAll('[data-browse-services]').forEach(button => {
+    button.addEventListener('click', () => {
+      search.value = '';
+      select(tabs.findIndex(tab => tab.id === 'tab-explorer'), false);
+      const dropdown = document.querySelector('#panel-explorer .resource-filter[data-filter="d0"]');
+      if (dropdown) { dropdown.open = true; dropdown.querySelector('summary').focus(); }
+    });
+  });
   document.addEventListener('click', event => {
+    if (event.target.closest('[data-browse-services]')) return;
     document.querySelectorAll('.resource-filter[open]').forEach(dropdown => {
       if (!dropdown.contains(event.target)) dropdown.open = false;
     });
   });
-  document.getElementById('print-report').addEventListener('click', () => window.print());
+  document.getElementById('print-report').addEventListener('click', () => {
+    if (window.self === window.top) { window.print(); return; }
+    printing = true;
+    stopChartAnimations();
+    document.documentElement.classList.add('report-print-view');
+    document.getElementById('print-help').hidden = false;
+    document.getElementById('close-print-view').focus();
+  });
+  document.getElementById('close-print-view').addEventListener('click', () => {
+    printing = false;
+    document.documentElement.classList.remove('report-print-view');
+    document.getElementById('print-help').hidden = true;
+    document.getElementById('print-report').focus();
+  });
   let printDetails = null;
   window.addEventListener('beforeprint', () => {
     printing = true;
@@ -902,7 +946,7 @@ def _resource_browser(section, id_prefix="resource"):
     total = 0
     unknown = 0
     visible_records = 0
-    filter_values = {"subscription": set(), "type": set(), "d1": set()}
+    filter_values = {"subscription": set(), "type": set(), "d0": set(), "d1": set()}
     history_records = section.get("historyRecords")
     def resource_key(fields):
         return tuple(value.strip().casefold() if index in {0, 1, 2, 4} else value.strip()
@@ -938,6 +982,8 @@ def _resource_browser(section, id_prefix="resource"):
                 value = _resource_type_label(value)
             attrs.append(f'data-d{index}="{_escape(value)}"')
             all_values[index].add(value)
+            if not savings:
+                filter_values[f"d{index}"].add(value)
             if active:
                 group = groups[index].setdefault(value, [0, 0, 0])
                 group[0] += cents or 0
@@ -1018,7 +1064,7 @@ def _resource_browser(section, id_prefix="resource"):
     filter_html = ""
     if not savings:
         controls = []
-        for key, label in (("subscription", "Subscription"), ("type", "Resource type"), ("d1", "Region")):
+        for key, label in (("d0", "Service"), ("subscription", "Subscription"), ("type", "Resource type"), ("d1", "Region")):
             options = "".join(
                 f'<label><input type="checkbox" data-filter-option value="{_escape(value)}" disabled>'
                 f'<span>{_escape(value)}</span></label>'
@@ -1051,10 +1097,17 @@ def _resource_browser(section, id_prefix="resource"):
         '<option value="10">10</option><option value="25">25</option><option value="50">50</option>'
         '</select> records</label>'
         f'<span class="resource-preview-count" role="status">{visible_records} records in the saved table</span>'
-        '<button type="button" class="download-resources" disabled>Download CSV · all matching</button></div>'
+        '<button type="button" class="download-resources" disabled>Export CSV · all matching</button></div>'
         '<p class="resource-export-note">Search and totals include every matching record, not just the preview. '
         'CSV includes full resource IDs and details; amounts use displayed cent precision. '
-        'Downloads require permission from the report host.</p>'
+        'Embedded viewers show selectable CSV below because they block file downloads. '
+        'Use the Live Reports toolbar to download the HTML and open it locally for file downloads.</p>'
+        '<section class="csv-preview" hidden aria-label="Matching records as CSV">'
+        '<h4>CSV · all matching records</h4><p>Select the text, copy it, and save it as a .csv file. '
+        'A downloaded HTML report can also save the CSV directly.</p>'
+        '<textarea readonly aria-label="CSV data" spellcheck="false"></textarea>'
+        '<div class="csv-actions"><button type="button" class="select-csv">Select CSV text</button>'
+        '<button type="button" class="close-csv">Close CSV</button></div></section>'
         f'<p class="breakdown-empty"{ " hidden" if visible_records else ""}>No records match these filters.</p>'
         '<p class="breakdown-print-note">Complete saved resource detail; interactive filters are not applied to print.</p>'
         '<div class="table-wrap" role="region" tabindex="0" aria-label="' + _escape(section["title"]) + ' table">'
@@ -1400,6 +1453,14 @@ def _dashboard(model, intro=""):
                 + _sections({"sections": sections[1:2]}, heading_level=3, id_prefix=key) + '</div>'
                 + _sections({"sections": sections[2:]}, heading_level=3, id_prefix=key)
             )
+        if key == "overview":
+            panel_body += (
+                '<aside class="cost-records-note"><p>Overview shows the top 15 services, not every resource. '
+                'Cost explorer includes every saved cost record and a Service filter for the smaller categories. '
+                'Web apps commonly share charges billed to an App Service plan. Resources without cost records '
+                'may not appear: this is not a resource inventory. These are reported costs, not estimates from SKU prices.</p>'
+                '<button type="button" data-browse-services>Browse every service in Cost explorer</button></aside>'
+            )
         panels.append(
             f'<div role="tabpanel" tabindex="0" id="panel-{key}" aria-labelledby="heading-{key}">'
             f'<section class="panel-intro"><div class="panel-heading">'
@@ -1428,8 +1489,13 @@ def _dashboard(model, intro=""):
         f'{_icon("search")}<label class="sr-only" for="table-search">Search table rows in this section</label>'
         '<input id="table-search" type="search" placeholder="Search rows in this section" '
         'aria-describedby="search-count"></div><span id="search-count" role="status"></span>'
+        '<button type="button" id="clear-report-filters">Clear filters</button>'
         f'<button type="button" id="print-report">{_icon("print")}<span>Print / save PDF</span></button>'
-        '</div>' + "".join(panels) + '</div></div>'
+        '</div><aside id="print-help" hidden role="status"><p>Print view shows all saved sections and resource details. '
+        'The embedded viewer blocks print dialogs. Download HTML using the Live Reports toolbar, '
+        'open that file in your browser, then choose Print / save PDF.</p>'
+        '<button type="button" id="close-print-view">Return to dashboard</button></aside>'
+        + "".join(panels) + '</div></div>'
     )
 
 

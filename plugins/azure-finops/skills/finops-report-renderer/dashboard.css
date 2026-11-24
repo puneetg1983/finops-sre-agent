@@ -393,6 +393,37 @@ html.dashboard-enhanced .dashboard .history-no-js { display: none; }
 #panel-overview:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 #panel-overview > .panel-intro, #panel-overview > .metrics, #panel-overview > .chart-panel,
 #panel-overview > .history-trend-slot { grid-column: 1 / -1; }
+#panel-overview > .cost-records-note { grid-column: 1 / -1; }
+.dashboard .cost-records-note, .dashboard #print-help {
+  padding: 16px; margin: 16px 0; border: 1px solid var(--cp-border);
+  border-radius: .625rem; background: var(--cp-surface-soft); color: var(--cp-text-muted);
+}
+.dashboard #print-help[hidden], .dashboard .csv-preview[hidden] { display: none; }
+.dashboard .csv-preview textarea {
+  width: 100%; min-height: 180px; padding: 12px; box-sizing: border-box;
+  border: 1px solid var(--cp-border-strong); border-radius: .625rem;
+  background: var(--cp-surface); color: var(--cp-text);
+  font: 12px Consolas, "Courier New", monospace;
+}
+.dashboard .csv-actions { display: flex; gap: 8px; margin-top: 8px; }
+html:not(.dashboard-enhanced) [data-browse-services] { display: none; }
+html.report-print-view .dashboard .dashboard-layout { display: block; }
+html.report-print-view .dashboard .dashboard-sidebar,
+html.report-print-view .dashboard .toolbar,
+html.report-print-view .dashboard .breakdown-grid,
+html.report-print-view .dashboard .breakdown-toolbar,
+html.report-print-view .dashboard .resource-filters,
+html.report-print-view .dashboard .chart-choices,
+html.report-print-view .dashboard .resource-preview-toolbar,
+html.report-print-view .dashboard .csv-preview { display: none; }
+html.report-print-view .dashboard [role="tabpanel"] { display: block !important; }
+html.report-print-view .dashboard tbody tr:not(.period-inactive) { display: table-row !important; }
+html.report-print-view .dashboard .breakdown-print-note { display: block; }
+html.report-print-view .dashboard .table-wrap { overflow: visible; }
+html.report-print-view .dashboard table { width: 100%; min-width: 0; table-layout: fixed; }
+html.report-print-view .dashboard th, html.report-print-view .dashboard td {
+  max-width: none; white-space: normal; overflow-wrap: anywhere;
+}
 #panel-overview > .history-services-slot, #panel-overview > .history-groups-slot { min-width: 0; }
 html:not(.dashboard-enhanced) .dashboard .clear-breakdown,
 html:not(.dashboard-enhanced) .dashboard .resource-filters,
@@ -490,6 +521,7 @@ html:not(.dashboard-enhanced) .dashboard .breakdown-instructions { display: none
   .dashboard .breakdown-instructions, .dashboard .breakdown-empty,
   .dashboard .resource-filters, .dashboard .chart-choices, .dashboard .resource-preview-toolbar,
   .dashboard .resource-export-note { display: none; }
+  .dashboard .csv-preview, .dashboard #print-help, .dashboard [data-browse-services] { display: none; }
   .dashboard .breakdown-print-note { display: block; }
   .dashboard .resource-name { display: block; overflow: visible; }
   .dashboard .resource-table .resource-detail-row { display: table-row !important; }

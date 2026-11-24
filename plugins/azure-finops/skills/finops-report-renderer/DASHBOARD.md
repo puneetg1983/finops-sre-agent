@@ -5,13 +5,24 @@ Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, `fl
 together. There are no third-party scripts, fonts, network calls or view-time Azure tools in
 dashboard HTML. CSP nonces are substituted by SaveReport. Without JavaScript, all sections remain
 readable; with it, tabs support keyboard navigation, the mobile section selector, table search and
-print/PDF (which prints all sections).
+print/PDF (which prints all sections when opened locally).
+Live Reports embeds the report in an `allow-scripts` iframe: file downloads and print
+dialogs are blocked by that viewer. CSV export therefore exposes all matching records
+in a read-only text area with Select CSV text; copying does not require clipboard permissions.
+Opened locally, the same button also downloads the CSV. Print / save PDF opens a complete
+print view in the embedded viewer, with instructions to download HTML using the native Live
+Reports toolbar and print that file locally. Return to dashboard preserves filters.
 
 The report uses a compact portal-inspired shell, grouped navigation, a command bar, and an
 inline scope disclosure. The overview's Top services is a ranked horizontal bar graph with
 Azure service symbols and an expandable data table. The heading retains **FinOps: Dashboard**,
 with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
 authenticated SRE Agent portal or a claim of Microsoft endorsement.
+Overview ranks only the top 15 services. Its Browse every service button opens Cost
+explorer's Service dropdown, including zero-cost and smaller categories present in saved
+cost rows. A cost report is not resource inventory: web apps often share a plan's bill,
+and existing resources without cost rows need not appear. Reported cost is not a SKU-price
+estimate; do not invent charges to fill an inventory gap.
 
 The header has explicit **Light** and **Dark** buttons. The initial theme follows the report
 URL or the browser's color preference; either button switches the open report without a reload,
@@ -95,7 +106,7 @@ horizontal signed bars with the same data, rather than squeezed columns or inter
 Compact horizontal rows align the name, bar and amount on one line; only narrow mobile
 containers move the bar below the label. Desktop plots use a shorter shared axis and tighter padding.
 Colors stay stable while filtering.
-At the top of Cost explorer, compact Subscription, Resource type and Region dropdowns default to
+At the top of Cost explorer, compact Service, Subscription, Resource type and Region dropdowns default to
 **All** and show `(1 selected)`, `(2 selected)`, etc. for explicit choices. They support multiple
 checkbox selections: choices within a dropdown are combined with OR; different dropdowns combine
 with AND. Each dropdown's All button clears just that dimension; removing its last explicit
@@ -105,7 +116,9 @@ Resource type is derived from the ARM resource ID (including nested and extensio
 unidentifiable types remain `(unknown)`, not guessed from a service name.
 Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines
 filters; search also filters the breakdowns and totals. Clear filters resets the bar selections,
-not the search field. Resource names expand a full-width details panel with the full ID and
+dropdowns, drill levels and search field. The toolbar's Clear filters resets all sections.
+Changing filters or dates closes any CSV preview so stale exports cannot appear current.
+Resource names expand a full-width details panel with the full ID and
 every original field. Filtering hides the corresponding details with each resource row.
 Unknown savings remain unquantified, not zero-valued recommendations. Bars share a signed
 USD scale; labels remain authoritative. Counts refer to records,
