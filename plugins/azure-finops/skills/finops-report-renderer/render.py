@@ -259,8 +259,8 @@ _DASHBOARD_SCRIPT = """
     const high = Math.max(0, ...compact.map(([, group]) => group.total));
     const low = Math.min(0, ...compact.map(([, group]) => group.total));
     const span = high - low || 1;
-    const plot = chart.querySelector('.column-plot');
-    plot.style.setProperty('--column-zero', (-low / span * 100) + '%');
+    const verticalZero = high / span * 160;
+    const horizontalZero = -low / span * 100;
     const axis = chart.querySelector('.column-axis');
     axis.replaceChildren();
     for (let index = 0; high !== low && index < 5; index++) {
@@ -273,8 +273,9 @@ _DASHBOARD_SCRIPT = """
       entries.length + ' categories' + (entries.length > 11 ? ' · Top 10 + Other' : '') +
         (depth ? ' · Exploring Other' : '') : 'No categories match these filters';
     const list = chart.querySelector('.breakdown-bars');
-    list.style.setProperty('--column-count', Math.max(1, compact.length));
+    list.className = 'breakdown-bars columns-' + Math.max(1, compact.length);
     list.replaceChildren();
+    const svgNS = 'http://www.w3.org/2000/svg';
     compact.forEach(([value, group]) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -290,13 +291,37 @@ _DASHBOARD_SCRIPT = """
       const label = document.createElement('span');
       label.className = 'breakdown-name'; label.textContent = value;
       const cost = document.createElement('strong'); cost.textContent = amount;
-      const track = document.createElement('span'); track.className = 'column-track';
-      track.setAttribute('aria-hidden', 'true');
-      const fill = document.createElement('span'); fill.className = 'column-fill';
-      fill.dataset.negative = String(group.total < 0);
-      fill.style.setProperty('--column-size', Math.abs(group.total) / span * 100 + '%');
-      fill.style.setProperty('--column-start', ((group.total < 0 ? group.total - low : -low) / span * 100) + '%');
-      track.append(fill); button.append(cost, track, label); list.append(button);
+      const vertical = document.createElementNS(svgNS, 'svg');
+      vertical.setAttribute('class', 'column-track-vertical');
+      vertical.setAttribute('viewBox', '0 0 100 160');
+      vertical.setAttribute('preserveAspectRatio', 'none');
+      vertical.setAttribute('aria-hidden', 'true');
+      const baseline = document.createElementNS(svgNS, 'line');
+      [['x1', 0], ['x2', 100], ['y1', verticalZero], ['y2', verticalZero], ['class', 'column-zero']]
+        .forEach(([name, value]) => baseline.setAttribute(name, value));
+      const bar = document.createElementNS(svgNS, 'rect');
+      const barHeight = Math.abs(group.total) / span * 160;
+      const barY = group.total < 0 ? verticalZero : verticalZero - barHeight;
+      [['x', 22], ['width', 56], ['y', barY], ['height', barHeight],
+       ['class', 'column-fill'], ['data-negative', String(group.total < 0)]]
+        .forEach(([name, value]) => bar.setAttribute(name, value));
+      vertical.append(baseline, bar);
+      const horizontal = document.createElementNS(svgNS, 'svg');
+      horizontal.setAttribute('class', 'column-track-horizontal');
+      horizontal.setAttribute('viewBox', '0 0 100 14');
+      horizontal.setAttribute('preserveAspectRatio', 'none');
+      horizontal.setAttribute('aria-hidden', 'true');
+      const zero = document.createElementNS(svgNS, 'line');
+      [['x1', horizontalZero], ['x2', horizontalZero], ['y1', 0], ['y2', 14], ['class', 'column-zero']]
+        .forEach(([name, value]) => zero.setAttribute(name, value));
+      const horizontalBar = document.createElementNS(svgNS, 'rect');
+      const barWidth = Math.abs(group.total) / span * 100;
+      const barX = group.total < 0 ? (group.total - low) / span * 100 : horizontalZero;
+      [['x', barX], ['width', barWidth], ['y', 2], ['height', 10],
+       ['class', 'column-fill'], ['data-negative', String(group.total < 0)]]
+        .forEach(([name, value]) => horizontalBar.setAttribute(name, value));
+      horizontal.append(zero, horizontalBar);
+      button.append(cost, vertical, horizontal, label); list.append(button);
     });
   }
   function updateBrowser(browser, term) {
@@ -828,26 +853,41 @@ def _column_chart(entries, tones):
     axis = "".join(f"<span>{_usd(round(Decimal(high) - Decimal(span) * index / 4))}</span>"
                    for index in range(5)) if high != low else ""
     columns = []
+    def svg_line(css_class, **attrs):
+        rendered_attrs = " ".join(f'{name.replace("_", "-")}="{_escape(value)}"'
+                                  for name, value in attrs.items())
+        return f'<line class="{css_class}" {rendered_attrs}/>'
     for value, (amount, count, missing) in compact:
         tone = tones.get(value, "other")
         label = "Not quantified" if missing == count else _usd(amount)
         description = f"{value}: {label}, {count} records"
         if missing:
             description += f", {missing} unquantified"
-        bottom = (amount - low if amount < 0 else -low) / span * 100
+        vertical_zero = high / span * 160
+        horizontal_zero = -low / span * 100
+        bar_height = abs(amount) / span * 160
+        bar_y = vertical_zero if amount < 0 else vertical_zero - bar_height
+        bar_width = abs(amount) / span * 100
+        bar_x = (amount - low) / span * 100 if amount < 0 else horizontal_zero
         columns.append(
             f'<button type="button" class="chart-tone-{tone}" '
             f'data-value="{_escape(value)}" data-values="{_escape(json.dumps(members[value]))}" '
             f'aria-label="{_escape(description)}" title="{_escape(description)}" aria-pressed="false" disabled="disabled">'
-            f'<strong>{label}</strong><span class="column-track" aria-hidden="true">'
-            f'<span class="column-fill" data-negative="{str(amount < 0).lower()}" '
-            f'style="--column-size:{abs(amount) / span * 100:.6f}%;--column-start:{bottom:.6f}%">'
-            f'</span></span><span class="breakdown-name">{_escape(value)}</span></button>'
+            f'<strong>{_escape(label)}</strong><svg class="column-track-vertical" viewBox="0 0 100 160" '
+            f'preserveAspectRatio="none" aria-hidden="true">'
+            f'{svg_line("column-zero", x1=0, x2=100, y1=vertical_zero, y2=vertical_zero)}'
+            f'<rect class="column-fill" x="22" width="56" y="{bar_y:.6f}" height="{bar_height:.6f}" '
+            f'data-negative="{str(amount < 0).lower()}"/></svg>'
+            f'<svg class="column-track-horizontal" viewBox="0 0 100 14" preserveAspectRatio="none" aria-hidden="true">'
+            f'{svg_line("column-zero", x1=horizontal_zero, x2=horizontal_zero, y1=0, y2=14)}'
+            f'<rect class="column-fill" x="{bar_x:.6f}" width="{bar_width:.6f}" y="2" height="10" '
+            f'data-negative="{str(amount < 0).lower()}"/></svg>'
+            f'<span class="breakdown-name">{_escape(value)}</span></button>'
         )
     return (
-        f'<div class="column-plot" style="--column-zero:{-low / span * 100:.6f}%">'
+        '<div class="column-plot">'
         f'<div class="column-axis" aria-hidden="true">{axis}</div>'
-        f'<div class="breakdown-bars" style="--column-count:{max(1, len(compact))}">{"".join(columns)}</div></div>'
+        f'<div class="breakdown-bars columns-{max(1, len(compact))}">{"".join(columns)}</div></div>'
     )
 
 

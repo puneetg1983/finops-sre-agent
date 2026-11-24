@@ -472,8 +472,10 @@ def test_column_chart_preserves_amounts_labels_and_scaled_heights():
     assert len(buttons) == 3
     assert buttons[0].attrib["title"] == "East <US>: $30.00, 1 records"
     assert buttons[1].attrib["title"] == "West: $10.00, 1 records"
-    assert "--column-size:100.000000%" in buttons[0].find(".//span[@class='column-fill']").attrib["style"]
-    assert "--column-size:33.333333%" in buttons[1].find(".//span[@class='column-fill']").attrib["style"]
+    assert buttons[0].find(".//rect[@class='column-fill']").attrib["height"] == "160.000000"
+    assert buttons[1].find(".//rect[@class='column-fill']").attrib["height"] == "53.333333"
+    assert buttons[0].find(".//svg[@class='column-track-horizontal']").find("rect").attrib["width"] == "100.000000"
+    assert "style=" not in markup
     assert 'data-value="East &lt;US&gt;"' in markup
 
 
@@ -507,6 +509,7 @@ def test_resource_preview_retains_full_source_and_csv_fields():
     assert "Download CSV · all matching" in output
     assert 'data-export-columns=' in output and 'data-export-name="finops-resource-costs.csv"' in output
     assert 'data-theme-choice="light"' in output and 'data-theme-choice="dark"' in output
+    assert "style=" not in output
     assert "connect-src 'none'" in output
     assert re.findall(r'data-amount="(\d+)"', output) == [str(index * 100) for index in range(79, -1, -1)]
 
@@ -519,16 +522,17 @@ def test_resource_preview_retains_full_source_and_csv_fields():
 def test_empty_zero_and_unquantified_charts_do_not_invent_axis_values(entries):
     chart = ET.fromstring(renderer._column_chart(entries, {}))
     assert chart.find(".//div[@class='column-axis']").findall("span") == []
-    for bar in chart.findall(".//span[@class='column-fill']"):
-        assert "--column-size:0.000000%" in bar.attrib["style"]
+    for bar in chart.findall(".//svg[@class='column-track-vertical']/rect[@class='column-fill']"):
+        assert float(bar.attrib["height"]) == 0
 
 
 def test_signed_column_chart_places_credits_below_zero():
     chart = ET.fromstring(renderer._column_chart([("East", (3000, 1, 0)), ("West", (-1000, 1, 0))], {}))
-    assert "--column-zero:25.000000%" in chart.attrib["style"]
-    positive, negative = chart.findall(".//span[@class='column-fill']")
-    assert "--column-size:75.000000%;--column-start:25.000000%" == positive.attrib["style"]
-    assert "--column-size:25.000000%;--column-start:0.000000%" == negative.attrib["style"]
+    positive, negative = chart.findall(".//svg[@class='column-track-vertical']/rect[@class='column-fill']")
+    assert positive.attrib["y"] == "0.000000"
+    assert positive.attrib["height"] == "120.000000"
+    assert negative.attrib["y"] == "120.000000"
+    assert negative.attrib["height"] == "40.000000"
     assert negative.attrib["data-negative"] == "true"
 
 
