@@ -85,6 +85,8 @@ Negative amounts plot below the shared zero baseline; Other combines signed amou
 net positive Other may contain individual credits visible when drilled into. Empty, zero and
 unquantified amounts do not invent axis values or bar heights. Smaller chart containers use
 horizontal signed bars with the same data, rather than squeezed columns or internal scrollbars.
+Compact horizontal rows align the name, bar and amount on one line; only narrow mobile
+containers move the bar below the label. Desktop plots use a shorter shared axis and tighter padding.
 Colors stay stable while filtering.
 At the top of Cost explorer, compact Subscription, Resource type and Region dropdowns default to
 **All** and show `(1 selected)`, `(2 selected)`, etc. for explicit choices. They support multiple
