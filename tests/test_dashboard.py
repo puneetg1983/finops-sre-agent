@@ -459,39 +459,39 @@ def test_explorer_breakdowns_keep_short_names_full_details_and_signed_cents():
     assert '<div class="resource-detail-field resource-detail-id">' in output
     assert 'data-amount="-100"' in output
     assert 'data-d0="App Service" data-d1="East US"' in output
-    assert 'max="70" value="70"' in output
+    assert 'data-negative="true"' in output
 
 
-def test_region_pie_shows_exact_shares_and_omits_zero_slices():
-    markup, total = renderer._region_pie(
+def test_column_chart_preserves_amounts_labels_and_scaled_heights():
+    markup = renderer._column_chart(
         [("East <US>", [3000, 1, 0]), ("West", [1000, 1, 0]), ("Zero", [0, 1, 0])],
         {"East <US>": 0, "West": 1, "Zero": 2},
     )
-    pie = ET.fromstring(markup)
-    assert total == 4000
-    assert len(pie.findall("path")) == 2
-    assert pie.findall("path")[0].find("title").text == "East <US>: $30.00 (75.0%)"
-    assert pie.findall("path")[1].find("title").text == "West: $10.00 (25.0%)"
-    assert all(path.attrib["d"].count("A 100 100") == 2 for path in pie.findall("path"))
+    chart = ET.fromstring(markup)
+    buttons = chart.findall(".//button")
+    assert len(buttons) == 3
+    assert buttons[0].attrib["title"] == "East <US>: $30.00, 1 records"
+    assert buttons[1].attrib["title"] == "West: $10.00, 1 records"
+    assert "--column-size:100.000000%" in buttons[0].find(".//span[@class='column-fill']").attrib["style"]
+    assert "--column-size:33.333333%" in buttons[1].find(".//span[@class='column-fill']").attrib["style"]
     assert 'data-value="East &lt;US&gt;"' in markup
-    single, _ = renderer._region_pie([("East", [1, 1, 0])], {"East": 0})
-    assert "(100.0%)" in single and "M 110 110 L" not in single
 
 
 def test_large_breakdown_preserves_other_members_and_signed_region_costs():
     entries = [(f"region-{index}", (100 - index, 2, 0)) for index in range(12)]
     compact, members = renderer._compact_breakdown(entries)
-    assert len(compact) == 6
+    assert len(compact) == 11
     label, group = compact[-1]
-    assert members[label] == [name for name, _ in entries[5:]]
-    assert group == (sum(row[0] for _, row in entries[5:]), 14, 0)
+    assert members[label] == [name for name, _ in entries[10:]]
+    assert group == (sum(row[0] for _, row in entries[10:]), 4, 0)
     assert sum(row[0] for _, row in compact) == sum(row[0] for _, row in entries)
-    markup, total = renderer._region_pie(entries, renderer._chart_tones(name for name, _ in entries))
-    assert markup.count("<path ") == 6 and total == sum(row[0] for _, row in entries)
-    assert 'data-values=' in markup and "Other (7)" in markup
-    signed = entries[:-1] + [("credit", (-1, 1, 0))]
-    markup, total = renderer._region_pie(signed, renderer._chart_tones(name for name, _ in signed))
-    assert "credits" in markup and total == 0 and "<svg" not in markup
+    markup = renderer._column_chart(entries, renderer._chart_tones(name for name, _ in entries))
+    assert markup.count("<button ") == 11
+    assert 'data-values=' in markup and "Other (2)" in markup
+    collision = entries + [("Other (3)", (1, 1, 0))]
+    compact, members = renderer._compact_breakdown(collision)
+    assert compact[-1][0] == "Other (3) combined"
+    assert "Other (3)" in members[compact[-1][0]]
 
 
 def test_resource_preview_retains_full_source_and_csv_fields():
@@ -511,16 +511,25 @@ def test_resource_preview_retains_full_source_and_csv_fields():
     assert re.findall(r'data-amount="(\d+)"', output) == [str(index * 100) for index in range(79, -1, -1)]
 
 
-@pytest.mark.parametrize("entries,message", [
-    ([], "No positive regional cost"),
-    ([("East", [0, 1, 0])], "No positive regional cost"),
-    ([("East", [3000, 1, 0]), ("West", [-1000, 1, 0])], "Signed amounts"),
+@pytest.mark.parametrize("entries", [
+    [],
+    [("East", [0, 1, 0])],
+    [("East", [0, 1, 1])],
 ])
-def test_region_pie_never_invents_shares_for_empty_zero_or_negative_totals(entries, message):
-    markup, total = renderer._region_pie(entries, {})
-    assert message in markup
-    assert total == 0
-    assert "<svg" not in markup
+def test_empty_zero_and_unquantified_charts_do_not_invent_axis_values(entries):
+    chart = ET.fromstring(renderer._column_chart(entries, {}))
+    assert chart.find(".//div[@class='column-axis']").findall("span") == []
+    for bar in chart.findall(".//span[@class='column-fill']"):
+        assert "--column-size:0.000000%" in bar.attrib["style"]
+
+
+def test_signed_column_chart_places_credits_below_zero():
+    chart = ET.fromstring(renderer._column_chart([("East", (3000, 1, 0)), ("West", (-1000, 1, 0))], {}))
+    assert "--column-zero:25.000000%" in chart.attrib["style"]
+    positive, negative = chart.findall(".//span[@class='column-fill']")
+    assert "--column-size:75.000000%;--column-start:25.000000%" == positive.attrib["style"]
+    assert "--column-size:25.000000%;--column-start:0.000000%" == negative.attrib["style"]
+    assert negative.attrib["data-negative"] == "true"
 
 
 @pytest.mark.parametrize("suffix,expected", [
@@ -554,8 +563,9 @@ def test_explorer_dropdowns_keep_all_dimensions_and_escape_options():
     assert 'data-filter-option value="sub&lt;one&gt;" disabled><span>sub&lt;one&gt;</span>' in output
     assert 'data-filter-option value="(unknown)" disabled><span>(unknown)</span>' in output
     assert '<fieldset><legend class="sr-only">Subscription</legend>' in output
-    assert '<strong>$3.00 · 75.0%</strong>' in output
-    assert 'data-visualization="region-pie"' in output
+    assert '<strong>$3.00</strong>' in output
+    assert 'data-chart-choice="d1"' in output
+    assert "region-pie" not in output and "breakdown-all" not in output
 
 
 def test_savings_breakdowns_preserve_unknowns_evidence_and_validation():

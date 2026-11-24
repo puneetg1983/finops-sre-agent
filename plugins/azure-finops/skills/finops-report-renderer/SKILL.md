@@ -20,7 +20,8 @@ retain their native periods. Follow DASHBOARD.md for the history envelopes and f
 if history is incomplete or exceeds the Live Report 10 MB limit; never silently truncate it.
 Opening the saved report makes no Azure calls.
 
-The dashboard includes Light/Dark buttons, compact category breakdowns with drillable Other,
+The dashboard includes Light/Dark buttons, full-width signed column charts with drillable Other
+and switchable groupings (no pie or expandable category lists),
 top 10/25/50 record previews and local CSV export of every matching record. Preview limits
 must never change financial totals, full-dataset search or exports. The report host must
 allow downloads; complete print/PDF and no-JavaScript tables remain available.

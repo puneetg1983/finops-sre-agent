@@ -115,18 +115,30 @@ _DASHBOARD_SCRIPT = """
     points.forEach((point, index) => {
       play(point, {opacity: [0, 1]}, 250, index / Math.max(1, points.length - 1) * 650);
     });
-    chart.querySelectorAll('.region-pie').forEach(pie => {
-      play(pie, {opacity: [0, 1], transform: ['scale(.94)', 'scale(1)'],
-        transformOrigin: ['center', 'center']});
-      pie.querySelectorAll('.region-slice').forEach((slice, index) => {
-        play(slice, {opacity: [0, 1]}, 400, Math.min(index, 6) * 60);
-      });
+    chart.querySelectorAll('.column-fill').forEach((column, index) => {
+      const horizontal = column.parentElement.getBoundingClientRect().height < 30;
+      const origin = horizontal ? (column.dataset.negative === 'true' ? 'right center' : 'left center') :
+        (column.dataset.negative === 'true' ? 'center top' : 'center bottom');
+      const scale = horizontal ? 'scaleX' : 'scaleY';
+      play(column, {transform: [scale + '(0)', scale + '(1)'],
+        transformOrigin: [origin, origin]}, 650, Math.min(index, 10) * 35);
     });
   }
   document.querySelectorAll('.resource-browser').forEach(browser => {
-    const state = {selected: new Map(), tones: new Map(), limit: 10,
+    const state = {selected: new Map(), tones: new Map(), drill: new Map(), limit: 10,
       rows: [...browser.querySelectorAll('tbody tr[data-search]')]};
     browsers.set(browser, state);
+    browser.querySelectorAll('[data-chart-choice]').forEach(button => {
+      button.disabled = false;
+      button.addEventListener('click', () => {
+        browser.querySelectorAll('[data-chart-choice]').forEach(choice =>
+          choice.setAttribute('aria-pressed', String(choice === button)));
+        browser.querySelectorAll('[data-dimension]').forEach(chart => {
+          chart.hidden = chart.dataset.dimension !== button.dataset.chartChoice;
+        });
+      });
+    });
+    browser.querySelectorAll('[data-dimension]').forEach((chart, index) => { chart.hidden = index !== 0; });
     const limit = browser.querySelector('[data-resource-limit]');
     limit.disabled = false;
     limit.addEventListener('change', () => { state.limit = Number(limit.value); filter(); });
@@ -160,6 +172,7 @@ _DASHBOARD_SCRIPT = """
         const input = event.target.closest('input[data-filter-option]');
         if (!input) return;
         const key = dropdown.dataset.filter;
+        state.drill.delete(key);
         const values = new Set(state.selected.get(key) || []);
         if (input.checked) values.add(input.value);
         else values.delete(input.value);
@@ -178,25 +191,46 @@ _DASHBOARD_SCRIPT = """
     browser.querySelectorAll('[data-filter-all]').forEach(button => {
       button.addEventListener('click', () => {
         state.selected.delete(button.dataset.filterAll);
+        state.drill.delete(button.dataset.filterAll);
         filter();
       });
     });
     browser.querySelectorAll('[data-dimension]').forEach(chart => {
       state.tones.set(chart.dataset.dimension, new Map(Object.entries(JSON.parse(chart.dataset.toneMap))));
       chart.addEventListener('click', event => {
+        if (event.target.closest('.chart-back')) {
+          const stack = state.drill.get(chart.dataset.dimension) || [];
+          stack.pop();
+          if (stack.length) state.selected.set(chart.dataset.dimension, new Set(stack.at(-1)));
+          else state.selected.delete(chart.dataset.dimension);
+          filter();
+          return;
+        }
         const button = event.target.closest('[data-value]');
         if (!button) return;
         const key = chart.dataset.dimension;
         const selected = state.selected.get(key);
         const values = button.dataset.values ? JSON.parse(button.dataset.values) : [button.dataset.value];
-        if (selectionEquals(selected, values)) state.selected.delete(key);
+        if (values.length > 1) {
+          const stack = state.drill.get(key) || [];
+          stack.push(values);
+          state.drill.set(key, stack);
+          state.selected.set(key, new Set(values));
+        } else if (selectionEquals(selected, values)) {
+          const parent = state.drill.get(key)?.at(-1);
+          if (parent) state.selected.set(key, new Set(parent));
+          else state.selected.delete(key);
+        }
         else state.selected.set(key, new Set(values));
         filter();
-        [...chart.querySelectorAll('button')].find(item => item.dataset.value === button.dataset.value)?.focus();
+        const target = [...chart.querySelectorAll('[data-value]')].find(item =>
+          item.dataset.value === button.dataset.value) || chart.querySelector('.chart-back');
+        if (!target.hidden) target.focus();
       });
     });
     browser.querySelector('.clear-breakdown').addEventListener('click', () => {
       state.selected.clear();
+      state.drill.clear();
       filter();
     });
   });
@@ -210,63 +244,60 @@ _DASHBOARD_SCRIPT = """
   }
   function compactEntries(entries) {
     const result = entries.map(([name, group]) => [name, {...group, values: [name]}]);
-    if (result.length <= 6) return result;
-    const rest = result.slice(5);
+    if (result.length <= 11) return result;
+    const rest = result.slice(10);
     let name = 'Other (' + rest.length + ')';
     while (entries.some(([value]) => value === name)) name += ' combined';
     const group = rest.reduce((sum, [, item]) => ({
       total: sum.total + item.total, count: sum.count + item.count,
       unknown: sum.unknown + item.unknown, values: [...sum.values, ...item.values]
     }), {total: 0, count: 0, unknown: 0, values: []});
-    return [...result.slice(0, 5), [name, group]];
+    return [...result.slice(0, 10), [name, group]];
   }
-  function drawRegionPie(chart, entries, tones, selected) {
-    const visual = chart.querySelector('.region-visual');
-    visual.replaceChildren();
-    const signed = entries.some(([, group]) => group.total < 0);
-    const total = entries.reduce((sum, [, group]) => sum + group.total, 0);
-    const hasPie = !signed && total > 0;
-    chart.querySelector('.region-layout').classList.toggle('is-fallback', !hasPie);
-    chart.querySelector('.breakdown-bars').classList.toggle('region-legend', hasPie);
-    if (!hasPie) {
-      const note = document.createElement('p');
-      note.className = 'region-note';
-      note.textContent = signed ?
-        'Regional totals include credits. Signed amounts are shown instead of a pie.' :
-        'No positive regional cost to display.';
-      visual.append(note);
-      return 0;
+  function drawColumns(chart, entries, tones, selected, depth) {
+    const compact = compactEntries(entries);
+    const high = Math.max(0, ...compact.map(([, group]) => group.total));
+    const low = Math.min(0, ...compact.map(([, group]) => group.total));
+    const span = high - low || 1;
+    const plot = chart.querySelector('.column-plot');
+    plot.style.setProperty('--column-zero', (-low / span * 100) + '%');
+    const axis = chart.querySelector('.column-axis');
+    axis.replaceChildren();
+    for (let index = 0; high !== low && index < 5; index++) {
+      const tick = document.createElement('span');
+      tick.textContent = money(Math.round(high - span * index / 4));
+      axis.append(tick);
     }
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', '0 0 220 220');
-    svg.setAttribute('class', 'region-pie');
-    svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'Regional cost share');
-    let start = 0;
-    const point = fraction => [
-      110 + 100 * Math.sin(2 * Math.PI * fraction),
-      110 - 100 * Math.cos(2 * Math.PI * fraction)
-    ].join(' ');
-    compactEntries(entries).forEach(([value, group]) => {
-      const share = group.total / total;
-      if (!share) return;
-      const path = document.createElementNS(ns, 'path');
-      path.setAttribute('d', (share === 1 ? 'M ' : 'M 110 110 L ') + point(start) +
-        ' A 100 100 0 0 1 ' + point(start + share / 2) +
-        ' A 100 100 0 0 1 ' + point(start + share) + ' Z');
-      path.setAttribute('class', 'region-slice chart-tone-' + (group.values.length > 1 ? 'other' : tones.get(value)));
-      path.dataset.value = value;
-      path.dataset.values = JSON.stringify(group.values);
-      path.dataset.selected = String(selectionEquals(selected, group.values));
-      const title = document.createElementNS(ns, 'title');
-      title.textContent = value + ': ' + money(group.total) + ' (' + (share * 100).toFixed(1) + '%)';
-      path.append(title);
-      svg.append(path);
-      start += share;
+    chart.querySelector('.chart-back').hidden = !depth;
+    chart.querySelector('.chart-caption').textContent = entries.length ?
+      entries.length + ' categories' + (entries.length > 11 ? ' · Top 10 + Other' : '') +
+        (depth ? ' · Exploring Other' : '') : 'No categories match these filters';
+    const list = chart.querySelector('.breakdown-bars');
+    list.style.setProperty('--column-count', Math.max(1, compact.length));
+    list.replaceChildren();
+    compact.forEach(([value, group]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chart-tone-' + (group.values.length > 1 ? 'other' : tones.get(value));
+      button.dataset.value = value;
+      button.dataset.values = JSON.stringify(group.values);
+      button.setAttribute('aria-pressed', String(selectionEquals(selected, group.values)));
+      const amount = group.unknown === group.count ? 'Not quantified' : money(group.total);
+      const description = value + ': ' + amount + ', ' + group.count + ' records' +
+        (group.unknown ? ', ' + group.unknown + ' unquantified' : '');
+      button.title = description;
+      button.setAttribute('aria-label', description);
+      const label = document.createElement('span');
+      label.className = 'breakdown-name'; label.textContent = value;
+      const cost = document.createElement('strong'); cost.textContent = amount;
+      const track = document.createElement('span'); track.className = 'column-track';
+      track.setAttribute('aria-hidden', 'true');
+      const fill = document.createElement('span'); fill.className = 'column-fill';
+      fill.dataset.negative = String(group.total < 0);
+      fill.style.setProperty('--column-size', Math.abs(group.total) / span * 100 + '%');
+      fill.style.setProperty('--column-start', ((group.total < 0 ? group.total - low : -low) / span * 100) + '%');
+      track.append(fill); button.append(cost, track, label); list.append(button);
     });
-    visual.append(svg);
-    return total;
   }
   function updateBrowser(browser, term) {
     const state = browsers.get(browser);
@@ -314,55 +345,11 @@ _DASHBOARD_SCRIPT = """
         else group.unknown++;
         groups.set(value, group);
       });
-      const entries = [...groups].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
-      const compact = compactEntries(entries);
-      const maximum = Math.max(1, ...entries.map(([, group]) => Math.abs(group.total)));
-      const list = chart.querySelector('.breakdown-bars');
-      list.replaceChildren();
-      const region = chart.dataset.visualization === 'region-pie';
-      const tones = state.tones.get(key);
-      const pieTotal = region ? drawRegionPie(chart, entries, tones, state.selected.get(key)) : 0;
-      const appendButtons = (target, items) => items.forEach(([value, group]) => {
-        const values = group.values || [value];
-        const tone = values.length > 1 ? 'other' : tones.get(value);
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'chart-tone-' + tone;
-        button.dataset.tone = tone;
-        button.dataset.value = value;
-        button.dataset.values = JSON.stringify(values);
-        button.setAttribute('aria-pressed', String(selectionEquals(state.selected.get(key), values)));
-        const name = document.createElement('span');
-        name.className = 'breakdown-name';
-        name.textContent = value;
-        const amount = document.createElement('strong');
-        amount.textContent = group.unknown === group.count ? 'Not quantified' : money(group.total);
-        if (pieTotal) amount.textContent += ' · ' + (group.total / pieTotal * 100).toFixed(1) + '%';
-        const detail = document.createElement('span');
-        detail.className = 'breakdown-meta';
-        detail.textContent = group.count + ' records' + (group.unknown ? ' · ' + group.unknown + ' unquantified' : '');
-        button.setAttribute('aria-label', value + ': ' + amount.textContent + ', ' + detail.textContent);
-        button.title = detail.textContent;
-        const meter = document.createElement('meter');
-        meter.min = 0; meter.max = maximum; meter.value = Math.abs(group.total);
-        meter.setAttribute('aria-label', value + ' magnitude in USD cents');
-        if (pieTotal) {
-          const swatch = document.createElement('span');
-          swatch.className = 'region-swatch chart-tone-' + tone;
-          swatch.setAttribute('aria-hidden', 'true');
-          button.append(swatch, name, amount, detail);
-        } else if (values.length > 1) button.append(name, amount, detail);
-        else button.append(name, amount, meter, detail);
-        target.append(button);
-      });
-      appendButtons(list, compact);
-      const all = chart.querySelector('.breakdown-all');
-      all.hidden = entries.length <= 6;
-      all.querySelector('summary').textContent = 'View all ' + entries.length + ' categories';
-      const full = all.querySelector('.breakdown-bars');
-      full.classList.toggle('region-legend', pieTotal > 0);
-      full.replaceChildren();
-      appendButtons(full, entries);
+      const stack = state.drill.get(key) || [];
+      const subset = stack.at(-1);
+      const entries = [...groups].filter(([value]) => !subset || subset.includes(value))
+        .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
+      drawColumns(chart, entries, state.tones.get(key), state.selected.get(key), stack.length);
     });
     return visible;
   }
@@ -822,46 +809,45 @@ def _sections(model, heading_level=2, id_prefix="section"):
 
 def _compact_breakdown(entries):
     members = {value: [value] for value, _ in entries}
-    if len(entries) <= 6:
+    if len(entries) <= 11:
         return entries, members
-    rest = entries[5:]
+    rest = entries[10:]
     label = f"Other ({len(rest)})"
     while label in members:
         label += " combined"
     members[label] = [value for value, _ in rest]
     totals = tuple(sum(group[index] for _, group in rest) for index in range(3))
-    return entries[:5] + [(label, totals)], members
+    return entries[:10] + [(label, totals)], members
 
 
-def _region_pie(entries, tones):
-    """Keep credits signed rather than turn negative regional totals into pie shares."""
-    signed = any(amount < 0 for _, (amount, _, _) in entries)
-    total = sum(amount for _, (amount, _, _) in entries)
-    if signed or total <= 0:
-        message = ("Regional totals include credits. Signed amounts are shown instead of a pie."
-                   if signed else "No positive regional cost to display.")
-        return f'<p class="region-note">{message}</p>', 0
-    paths, start = [], 0
-    def point(fraction):
-        return f"{110 + 100 * math.sin(2 * math.pi * fraction):.6f} {110 - 100 * math.cos(2 * math.pi * fraction):.6f}"
+def _column_chart(entries, tones):
     compact, members = _compact_breakdown(entries)
-    for value, (amount, _, _) in compact:
-        share = amount / total
-        if not share:
-            continue
-        path = (f'{"M" if share == 1 else "M 110 110 L"} {point(start)} A 100 100 0 0 1 {point(start + share / 2)} '
-                f"A 100 100 0 0 1 {point(start + share)} Z")
-        paths.append(
-            f'<path class="region-slice chart-tone-{tones.get(value, "other")}" d="{path}" '
+    high = max([amount for _, (amount, _, _) in compact] + [0])
+    low = min([amount for _, (amount, _, _) in compact] + [0])
+    span = high - low or 1
+    axis = "".join(f"<span>{_usd(round(Decimal(high) - Decimal(span) * index / 4))}</span>"
+                   for index in range(5)) if high != low else ""
+    columns = []
+    for value, (amount, count, missing) in compact:
+        tone = tones.get(value, "other")
+        label = "Not quantified" if missing == count else _usd(amount)
+        description = f"{value}: {label}, {count} records"
+        if missing:
+            description += f", {missing} unquantified"
+        bottom = (amount - low if amount < 0 else -low) / span * 100
+        columns.append(
+            f'<button type="button" class="chart-tone-{tone}" '
             f'data-value="{_escape(value)}" data-values="{_escape(json.dumps(members[value]))}" '
-            f'data-selected="false"><title>'
-            f'{_escape(value)}: {_usd(amount)} ({share * 100:.1f}%)</title></path>'
+            f'aria-label="{_escape(description)}" title="{_escape(description)}" aria-pressed="false" disabled="disabled">'
+            f'<strong>{label}</strong><span class="column-track" aria-hidden="true">'
+            f'<span class="column-fill" data-negative="{str(amount < 0).lower()}" '
+            f'style="--column-size:{abs(amount) / span * 100:.6f}%;--column-start:{bottom:.6f}%">'
+            f'</span></span><span class="breakdown-name">{_escape(value)}</span></button>'
         )
-        start += share
     return (
-        '<svg class="region-pie" viewBox="0 0 220 220" role="img" '
-        'aria-label="Regional cost share">'
-        + "".join(paths) + "</svg>", total
+        f'<div class="column-plot" style="--column-zero:{-low / span * 100:.6f}%">'
+        f'<div class="column-axis" aria-hidden="true">{axis}</div>'
+        f'<div class="breakdown-bars" style="--column-count:{max(1, len(compact))}">{"".join(columns)}</div></div>'
     )
 
 
@@ -971,58 +957,21 @@ def _resource_browser(section, id_prefix="resource"):
         )
     charts = []
     for index, (label, _) in enumerate(dimensions):
-        region = not savings and index == 1
         entries = sorted(groups[index].items(), key=lambda item: (-item[1][0], item[0]))
         tones = _chart_tones(all_values[index])
-        pie, pie_total = _region_pie(entries, tones) if region else ("", 0)
-        maximum = max([abs(group[0]) for group in groups[index].values()] + [1])
-        compact, members = _compact_breakdown(entries)
-
-        def render_buttons(items):
-            bars = []
-            for value, (amount, count, missing) in items:
-                tone = tones.get(value, "other")
-                values = members[value]
-                indicator = (
-                    f'<span class="region-swatch chart-tone-{tone}" aria-hidden="true"></span>'
-                    if pie_total else ""
-                )
-                meter = (
-                    f'<meter min="0" max="{maximum}" value="{abs(amount)}" aria-label="{_escape(value)} magnitude in USD cents"></meter>'
-                    if not pie_total and len(values) == 1 else ""
-                )
-                percentage = f" · {amount / pie_total * 100:.1f}%" if pie_total else ""
-                bars.append(
-                    f'<button type="button" class="chart-tone-{tone}" data-tone="{tone}" '
-                    f'data-value="{_escape(value)}" data-values="{_escape(json.dumps(values))}" '
-                    f'aria-label="{_escape(value)}: {_escape("Not quantified" if missing == count else _usd(amount))}, '
-                    f'{count} records" title="{count} records" aria-pressed="false" disabled>{indicator}'
-                    f'<span class="breakdown-name">{_escape(value)}</span><strong>'
-                    f'{"Not quantified" if missing == count else _usd(amount)}{percentage}</strong>{meter}'
-                    f'<span class="breakdown-meta">{count} records'
-                    + (f" · {missing} unquantified" if missing else "") + "</span></button>"
-                )
-            return "".join(bars)
-
-        bars = render_buttons(compact)
-        chart_body = f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">{bars}</div>'
-        if region:
-            chart_body = (
-                f'<div class="region-layout{"" if pie_total else " is-fallback"}">'
-                f'<div class="region-visual">{pie}</div>{chart_body}</div>'
-            )
-        chart_body += (
-            f'<details class="breakdown-all"{" hidden" if len(entries) <= 6 else ""}>'
-            f'<summary>View all {len(entries)} categories</summary>'
-            f'<div class="breakdown-bars{" region-legend" if pie_total else ""}">'
-            f'{render_buttons(entries)}</div></details>'
-        )
         charts.append(
             f'<div class="breakdown-chart" data-dimension="d{index}"'
-            + f' data-tone-map="{_escape(json.dumps(tones, ensure_ascii=True))}"'
-            + (' data-visualization="region-pie"' if region else "") +
-            f'><h4>By {_escape(label.lower())}</h4>{chart_body}</div>'
+            f' data-tone-map="{_escape(json.dumps(tones, ensure_ascii=True))}">'
+            f'<div class="chart-heading"><div><h4>{"Savings" if savings else "Spend"} by {_escape(label.lower())}</h4>'
+            f'<p class="chart-caption">{len(entries)} categories'
+            f'{" · Top 10 + Other" if len(entries) > 11 else ""}</p></div>'
+            '<button type="button" class="chart-back" hidden>Back to broader view</button></div>'
+            f'{_column_chart(entries, tones)}</div>'
         )
+    chart_choices = "".join(
+        f'<button type="button" data-chart-choice="d{index}" aria-pressed="{str(index == 0).lower()}" disabled>'
+        f'{_escape(label)}</button>' for index, (label, _) in enumerate(dimensions)
+    )
     columns = ["Resource name", "Resource type", "Recommended action", "Monthly savings", "Validation"] if savings else [
         "Resource name", "Service", "Region", "Cost (USD)",
     ]
@@ -1050,7 +999,8 @@ def _resource_browser(section, id_prefix="resource"):
         f'<h3>{_escape(section["title"])}</h3>'
         f'<p class="section-description">{_escape(section["description"])}</p>'
         f'{filter_html}'
-        '<p class="breakdown-instructions">Select a bar, pie slice or region label to filter; select it again to clear. Expand a resource name for its full ID and details.</p>'
+        f'<div class="chart-choices" role="group" aria-label="Chart grouping">{chart_choices}</div>'
+        '<p class="breakdown-instructions">Select a bar to explore resources. Other opens its categories in this chart. Credits retain their negative sign.</p>'
         f'<div class="breakdown-grid">{"".join(charts)}</div>'
         '<div class="breakdown-toolbar"><p class="breakdown-result" role="status">'
         f'{visible_records} records · {"No quantified amount" if visible_records and unknown == visible_records else _usd(total)}'

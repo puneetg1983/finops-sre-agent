@@ -23,8 +23,8 @@ Palette tokens are scoped to the dashboard, including light/dark metric status c
 common services retain the same color across Overview, Cost explorer and resource-type
 breakdowns. Official product artwork keeps its original colors.
 
-Charts draw in once when first visible during each dashboard opening: bars grow, trend lines
-trace, and regional pie slices fade into place. Hidden tabs and below-the-fold charts wait until
+Charts draw in once when first visible during each dashboard opening: bars grow and trend lines
+trace. Hidden tabs, inactive chart groupings and below-the-fold charts wait until
 viewed. Filtering and revisiting a chart do not replay the entrance animation. Motion is skipped
 for reduced-motion preferences, and printing cancels animation to show complete plots.
 This is presentation only: it does not fetch fresh costs or change the saved snapshot.
@@ -73,30 +73,33 @@ type. The builder checks that the default history slice matches the supplied tot
 points, breakdowns and resource rows. Financial aggregation preserves decimal precision and
 signed credits; displayed resource breakdowns sum cent-rounded records.
 
-Cost explorer uses linked service bars and a region pie chart above a compact resource table.
-Pie slices and region legend buttons filter the resource list; the legend shows amounts and
-percentages. Chart panels grow with their contents rather than using internal scrollbars.
-Each breakdown initially shows at most six entries: five leading categories plus **Other**
-when there are more than six. Other retains the exact combined amount and record count;
-selecting it filters to its actual member categories. **View all categories** expands the
-complete breakdown on demand. The pie uses the same compact grouping and sits at the top
-of its panel, rather than being vertically centered beside a long legend.
-Regional totals containing negative credits use signed bars instead of misleading pie shares;
-zero or empty totals show an explicit no-cost message. Region colors stay stable while filtering.
+Cost explorer uses one full-width column chart above a compact resource table. **Service**
+and **Region** controls switch the grouping without changing filters or totals. Labels sit
+directly below the columns; full names, amounts and record counts are available on hover and
+in accessible button labels. There is no pie, separate legend or expandable category list.
+Each breakdown shows ten leading categories plus **Other** when there are more than eleven.
+Other retains the exact net amount and record count. Selecting it filters to its actual
+members and replaces the same chart with their breakdown; repeat to reach the smaller tail.
+**Back to broader view** reverses one level, and Clear filters resets all drill levels.
+Negative amounts plot below the shared zero baseline; Other combines signed amounts, so a
+net positive Other may contain individual credits visible when drilled into. Empty, zero and
+unquantified amounts do not invent axis values or bar heights. Smaller chart containers use
+horizontal signed bars with the same data, rather than squeezed columns or internal scrollbars.
+Colors stay stable while filtering.
 At the top of Cost explorer, compact Subscription, Resource type and Region dropdowns default to
 **All** and show `(1 selected)`, `(2 selected)`, etc. for explicit choices. They support multiple
 checkbox selections: choices within a dropdown are combined with OR; different dropdowns combine
 with AND. Each dropdown's All button clears just that dimension; removing its last explicit
-selection also restores All. Escape or clicking outside closes the dropdown. Pie/legend clicks
-narrow Region to one choice, and selecting it again restores All.
+selection also restores All. Escape or clicking outside closes the dropdown. Column clicks
+narrow the plotted dimension to one choice; selecting it again restores its broader drill scope.
 Resource type is derived from the ARM resource ID (including nested and extension resources);
 unidentifiable types remain `(unknown)`, not guessed from a service name.
 Ranked savings uses resource-type and opportunity-kind breakdowns. Selecting bars combines
 filters; search also filters the breakdowns and totals. Clear filters resets the bar selections,
 not the search field. Resource names expand a full-width details panel with the full ID and
 every original field. Filtering hides the corresponding details with each resource row.
-Unknown savings remain unquantified, not zero-valued recommendations. Bar lengths show absolute
-magnitude (including credits); signed USD labels remain authoritative. Counts refer to records,
+Unknown savings remain unquantified, not zero-valued recommendations. Bars share a signed
+USD scale; labels remain authoritative. Counts refer to records,
 not unique resources. These views total the displayed, cent-rounded USD records; they do not
 deduplicate recommendations or claim that overlapping savings can all be realized.
 Without JavaScript, the complete table and initial breakdowns remain available. Print includes
