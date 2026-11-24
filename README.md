@@ -22,9 +22,9 @@ replaced by the in-chat `finops-setup` skill.
    **Selected subscriptions** (one or multiple; the agent's hosting subscription is preselected,
    but requires confirmation), then approve any required OBO permission prompt.
 
-The agent grants missing read-only cost roles on your behalf and builds **one consolidated FinOps
-dashboard** with 17 sections, local search, charts and print/PDF. One task refreshes it daily; a
-separate managed-resource anomaly task handles alerts. Everything means all resources in the agent's
+With your approval, setup grants missing read-only cost roles on your behalf and builds **one
+consolidated FinOps dashboard**. One task refreshes it daily; a separate managed-resource anomaly
+task handles alerts. Everything means all resources in the agent's
 Azure tenant, discovered from its root management group, including unmanaged resources. It requires
 Cost Management Reader at that root, approved via OBO. Other skills remain managed-resource-only.
 Selected subscriptions instead covers all resources in exactly the confirmed same-tenant
@@ -38,6 +38,50 @@ Say the setup sentence again to repair or update; old schedules are retired only
 dashboard saves successfully. Historical reports are not deleted.
 
 Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md) · Design: [docs/DESIGN.md](docs/DESIGN.md).
+
+## FinOps dashboard
+
+**FinOps: Dashboard** is one saved Live Report with 17 sections, rather than separate reports for
+each analysis. Setup builds it immediately and schedules a daily refresh. It is a snapshot: opening
+the report does not query Azure, and recent costs can be incomplete while billing data arrives.
+The core cost views use Azure Cost Management pre-tax costs in USD, not invoice totals; budgets
+retain their own currency and period.
+
+| What you can explore | Dashboard sections |
+|---|---|
+| Spend and ownership | Overview, Cost explorer, Ownership & allocation, Billing & adjustments |
+| Risk and efficiency | Budgets & forecasts, Anomalies, Rightsizing & waste, Commitments |
+| Workload insights | Containers, AI spend, Unit economics, Sustainability |
+| Decisions and coverage | Planning & scenarios, Governance & scorecards, Cost & reliability, Prioritized actions, Data & scope |
+
+Sections show their source, time period, refresh time and status. Some need additional data or
+permissions—for example container allocation, business volumes, sustainability measurements and
+billing exports. When a source is missing or incomplete, its section explains the gap instead of
+presenting invented values or a healthy zero. Recommendations are advisory; the dashboard does not
+change resources or automatically realize savings.
+
+### Using the dashboard
+
+- **Choose dates:** Overview and Cost explorer default to the latest 30 inclusive UTC days. When
+  complete history is available, choose the last 90 days or a custom date range within those 90 days.
+  Other sections retain their own source periods.
+- **Explore costs:** Switch between service and region charts, select bars to filter, and drill into
+  **Other**. Filter by service, subscription, resource type or region, and search resource records.
+  Overview shows the top 15 services; **Browse every service** opens the Cost explorer filter.
+- **Work with large lists:** The resource table shows the top 10 matching records by default, with
+  options for 25 or 50. Charts, totals and CSV export use **all** matching records, not just the
+  visible rows. Expand a resource to see its full details.
+- **Export or print:** In the embedded Live Report, export shows selectable CSV text because the
+  viewer blocks downloads. For a direct CSV download or print-to-PDF, use the Live Reports toolbar
+  to download the HTML and open it locally. The report also supports light and dark themes.
+
+Cost explorer shows cost records, **not a complete resource inventory**. For example, web
+apps can share costs billed to an App Service plan, and a resource without a cost record may not
+appear. The report shows its selected scope and data coverage; report viewers can inspect the whole
+saved snapshot, so use platform access controls to limit who can view it.
+
+For details on data sources, limitations and the dashboard contract, see
+[DASHBOARD.md](plugins/azure-finops/skills/finops-report-renderer/DASHBOARD.md).
 
 ## Repository layout
 
