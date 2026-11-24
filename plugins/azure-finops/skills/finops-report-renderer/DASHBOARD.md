@@ -42,6 +42,13 @@ The scheduled task retrieves two independent Daily query shapes over the same 90
 `ResourceGroupName,ServiceName` for Overview and
 `ResourceId,ServiceName,ResourceLocation,ChargeType` for Cost explorer. It filters each to
 the confirmed effective scope before inclusion. These overlapping shapes are never added together.
+Retrieval starts with 21-day overview and 7-day resource slices; these initial spans can still
+truncate and require splitting. `batch_cost_queries` interleaves shapes and schedules at most
+four calls per batch, with two per subscription across all its resource groups. Dispatch each
+batch concurrently, persist its results and then dispatch the next. Truncated leaves enqueue
+two children; successful leaves are retained. Throttling pauses dispatch and reduces the
+per-subscription bound to one for the rest of the run. These are tool-call instructions and
+a deterministic planner, not a new Azure client or a guarantee of faster server responses.
 `slice_daily_cost_query(prepared, [start, end])` creates the 30-day rows and default-period
 coverage for the existing analyses. Where the source cannot attribute coverage counts to a
 specific query scope, the counts are shown as unavailable rather than copied from 90 days.

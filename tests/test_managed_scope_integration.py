@@ -353,3 +353,16 @@ def test_dashboard_task_requests_two_scoped_daily_histories_and_30_day_fallback(
     assert "scope-filtered included_rows" in prompt
     assert 'cost_history={"status":"unavailable","reason":' in prompt
     assert "never truncate rows" in prompt
+
+
+def test_dashboard_retrieval_uses_bounded_parallel_slices_without_sequential_override():
+    prompt = (TASKS / "prompts" / "dashboard-report.txt").read_text()
+    preamble = (TASKS / "prompts" / "_dashboard-scope.txt").read_text()
+    managed = (FINOPS / "skills" / "finops-managed-scope" / "SKILL.md").read_text()
+    assert "slice_days=21" in prompt and "slice_days=7" in prompt
+    assert "batch_cost_queries(queue, max_concurrent=4, max_per_subscription=2)" in prompt
+    assert "same tool-call turn" in prompt
+    assert "max_per_subscription=1" in prompt
+    assert "instead of re-querying it" in prompt
+    assert "sequentially" not in preamble
+    assert "never in parallel" not in managed

@@ -67,7 +67,8 @@ excluded rows, unattributed AI cost, unsupported scopes, and partial/failed scop
 ### Step 1 — Pull AI cost line items
 
 Use two small `query_costs` shapes over the trailing 30 days (inclusive UTC dates). Each shape is
-planned, called sequentially, split on truncation, and prepared separately:
+planned, dispatched via `batch_cost_queries` from `cost_query` with section 4's bounded parallel
+execution and throttling backoff, split on truncation, and prepared separately:
 
 1. **Find the AI resource types.** Totals grouped by `ResourceType`:
 

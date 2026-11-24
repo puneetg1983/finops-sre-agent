@@ -4,6 +4,8 @@ import importlib.util
 import json
 import sys
 from decimal import Decimal
+from datetime import date, timedelta
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,108 @@ def test_split_halves_date_range_and_refuses_single_day():
     assert (second["from"], second["to"]) == ("2026-11-16", "2026-11-30")
     with pytest.raises(ValueError, match="single-day"):
         cost_query.split_cost_query(_args(SUB, "2026-11-01", "2026-11-01"))
+
+
+def test_presliced_histories_cover_every_day_once_and_preserve_shape_and_scope():
+    for days, expected_count in ((21, 5), (7, 13)):
+        plans = cost_query.plan_cost_queries(
+            [RG, OTHER_RG], start="2026-08-27", end="2026-11-24",
+            granularity="Daily", group_by=["ResourceId", "ServiceName"],
+            slice_days=days, as_of="2026-11-24",
+        )
+        assert len(plans) == expected_count * 2
+        for scope in (RG, OTHER_RG):
+            scoped = [plan for plan in plans if plan["scope"] == scope]
+            covered = []
+            for plan in scoped:
+                first, last = date.fromisoformat(plan["from"]), date.fromisoformat(plan["to"])
+                assert 1 <= (last - first).days + 1 <= days
+                assert plan["groupBy"] == "ResourceId,ServiceName"
+                assert plan["metric"] == "PreTaxCostUSD" and plan["top"] == 5000
+                covered.extend(first + timedelta(days=i) for i in range((last - first).days + 1))
+            assert covered == [date(2026, 8, 27) + timedelta(days=i) for i in range(90)]
+
+
+@pytest.mark.parametrize("slice_days", [0, -1, True, 1.5, "7"])
+def test_preslicing_rejects_invalid_sizes(slice_days):
+    with pytest.raises(ValueError, match="slice_days"):
+        cost_query.plan_cost_queries([SUB], start="2026-11-01", end="2026-11-30",
+                                     granularity="Daily", slice_days=slice_days)
+
+
+def test_preslicing_requires_daily_granularity():
+    with pytest.raises(ValueError, match="Daily"):
+        cost_query.plan_cost_queries([SUB], start="2026-11-01", end="2026-11-30",
+                                     granularity="Monthly", slice_days=7)
+
+
+def test_parallel_batches_interleave_shapes_and_share_subscription_limits_across_resource_groups():
+    overview = cost_query.plan_cost_queries(
+        [RG, "/subscriptions/sub/resourceGroups/second", OTHER_RG],
+        start="2026-08-27", end="2026-11-24", granularity="Daily",
+        group_by="ResourceGroupName,ServiceName", slice_days=21,
+    )
+    explorer = cost_query.plan_cost_queries(
+        [RG, OTHER_RG], start="2026-08-27", end="2026-11-24", granularity="Daily",
+        group_by="ResourceId,ServiceName,ResourceLocation,ChargeType", slice_days=7,
+    )
+    queries = overview + explorer
+    batches = cost_query.batch_cost_queries(queries)
+    assert {plan["groupBy"] for plan in batches[0]} == {overview[0]["groupBy"], explorer[0]["groupBy"]}
+    assert any(len(batch) == 4 for batch in batches)
+    assert len(batches) < len(queries)
+    for batch in batches:
+        assert 1 <= len(batch) <= 4
+        assert max(Counter(plan["scope"].split("/")[2].lower() for plan in batch).values()) <= 2
+    frozen = lambda plan: json.dumps(plan, sort_keys=True)
+    assert Counter(map(frozen, queries)) == Counter(frozen(plan) for batch in batches for plan in batch)
+
+    throttled = cost_query.batch_cost_queries(queries, max_per_subscription=1)
+    for batch in throttled:
+        assert len({plan["scope"].split("/")[2].lower() for plan in batch}) == len(batch)
+    assert cost_query.batch_cost_queries([]) == []
+
+
+@pytest.mark.parametrize("limits", [
+    {"max_concurrent": 0}, {"max_concurrent": 5}, {"max_concurrent": True},
+    {"max_per_subscription": 0}, {"max_per_subscription": 3},
+])
+def test_parallel_batch_limits_cannot_exceed_safe_bounds(limits):
+    with pytest.raises(ValueError, match="must be an integer"):
+        cost_query.batch_cost_queries([], **limits)
+
+
+def test_parallel_batches_reject_duplicates_and_do_not_mutate_arguments():
+    arguments = _args(RG, groupBy="ResourceId")
+    batch = cost_query.batch_cost_queries([arguments])
+    batch[0][0]["from"] = "2026-11-02"
+    assert arguments["from"] == "2026-11-01"
+    with pytest.raises(ValueError, match="duplicate pending"):
+        cost_query.batch_cost_queries([arguments, {**arguments, "scope": RG.upper()}])
+    with pytest.raises(ValueError, match="expanded"):
+        cost_query.batch_cost_queries([_args("/providers/Microsoft.Management/managementGroups/mg")])
+
+
+def test_parallel_split_leaves_prepare_in_any_completion_order_without_parent_double_count():
+    plans = cost_query.plan_cost_queries([RG], start="2026-11-01", end="2026-11-09",
+                                        granularity="Daily", group_by="ResourceId", slice_days=7)
+    children = cost_query.split_cost_query(plans[0])
+    leaves = children + plans[1:]
+    batches = cost_query.batch_cost_queries(leaves)
+    assert len(batches[0]) == 2
+    resource = f"{RG}/providers/Microsoft.Web/sites/app"
+    results = [{
+        "arguments": plan,
+        "result": _result(["PreTaxCostUSD", "UsageDate", "ResourceId", "Currency"], [
+            [1, int((date.fromisoformat(plan["from"]) + timedelta(days=i)).strftime("%Y%m%d")), resource, "USD"]
+            for i in range((date.fromisoformat(plan["to"]) - date.fromisoformat(plan["from"])).days + 1)
+        ]),
+    } for batch in batches for plan in batch]
+    prepared = cost_query.prepare_cost_query(list(reversed(results)), [RG],
+                                            window=["2026-11-01", "2026-11-09"])
+    assert prepared["partial"] is False
+    assert prepared["included_count"] == 9
+    assert prepared["included_cost"] == Decimal("9")
 
 
 def test_flattens_rows_and_filters_to_managed_scope():

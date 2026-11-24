@@ -56,7 +56,8 @@ queries = plan_cost_queries(
 )
 ```
 
-Call `*_query_costs` with each argument object exactly as planned, sequentially. When a result
+Call `*_query_costs` with each argument object exactly as planned, using
+`batch_cost_queries` from `cost_query` and section 4's bounded parallel execution and throttling backoff. When a result
 has a non-null `properties.nextLink`, discard it and query both `split_cost_query(arguments)`
 halves instead. Then:
 

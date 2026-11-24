@@ -48,7 +48,10 @@ Connector calls use that user's sign-in, including scheduled runs. OBO grants to
 grant the connector user access. Missing/expired connector falls back to Consumption UsageDetails
 with a warning. Setup reports the two identities' access separately.
 
-Cost queries are sequential, limited to 5,000 rows and split on truncation. Lookback is 92 days;
+Cost queries run in bounded parallel batches (four calls total, at most two per subscription),
+limited to 5,000 rows and split on truncation. Dashboard history starts with 21-day overview
+and 7-day resource slices instead of oversized 90-day probes. Throttling pauses new batches
+and reduces concurrency; completed reads are reused. Lookback is 92 days;
 longer budget-proposal history uses UsageDetails. Tags are joined by resource ID because query_costs
 doesn't group by tags. Root management groups are expanded to subscriptions for cost queries.
 

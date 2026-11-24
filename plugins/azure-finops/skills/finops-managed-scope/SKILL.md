@@ -163,6 +163,9 @@ queries = plan_cost_queries(
     granularity="Daily",                            # omit for totals over the window
     group_by="ResourceGroupName,ServiceName",       # at most 5 dimensions; tags unsupported
 )
+# Combine pending queries from independent shapes before scheduling.
+from cost_query import batch_cost_queries
+batches = batch_cost_queries(queries)            # <=4 calls total, <=2 per subscription
 ```
 
 - Call `query_costs` once per planned argument object, **exactly as returned** (it pins
@@ -172,18 +175,34 @@ queries = plan_cost_queries(
 - Persist each call as `{"arguments": <the arguments>, "result": <raw tool output>}`. When
   the runtime saves a large result to a file, load that file in Python; do not copy rows
   through the conversation.
+- **Parallel execution:** use `batch_cost_queries` on the entire pending queue, including
+  independent shapes and scopes. Dispatch ALL calls in one batch concurrently in the
+  same tool-call turn; wait for those calls to finish before dispatching the next batch.
+  Do not run separate queues per shape or spawn agents to fetch slices. The default
+  limits are four in-flight calls overall and two per subscription, shared by its
+  resource groups. Never exceed these bounds. If the tool host cannot execute concurrent
+  calls, disclose that limitation; do not claim the sequential fallback is parallel.
 - **Truncation:** a result whose `properties.nextLink` is not null was cut off at `top` rows
   and `query_costs` cannot page. Discard it, call `split_cost_query(arguments)`, and query
-  both halves. If a single day still truncates, reduce `groupBy` or add a filter.
+  both halves in later parallel batches with the other pending work. Keep completed
+  leaves; never re-query them or combine a truncated parent with its children.
+  If a single day still truncates, reduce `groupBy` or add a filter only when the
+  analysis permits a new shape; otherwise report incomplete coverage.
 - **Lookback:** `query_costs` only reaches back 92 days (pass `as_of=<today UTC>` to
   `plan_cost_queries` to enforce it). Longer histories use the section 5 fallback.
 - **Request only the shape the analysis needs.** Daily × `ResourceId` × meter queries over
   30 days can need several split calls even for one subscription; prefer totals
   (no granularity) or coarser dimensions where the skill allows it.
-- **Throttling:** run queries sequentially, never in parallel. On HTTP 429 or a
-  throttling message, wait for the indicated retry time (otherwise 60 s, doubling, at most
-  3 retries) and retry the same arguments. Cost data refreshes about every 4 hours, so
-  never re-query the same shape within one run.
+- **Avoid oversized probes:** for Daily histories use `plan_cost_queries(...,
+  slice_days=<positive integer>)` to start with bounded contiguous slices. The dashboard
+  uses 21-day overview and 7-day resource slices. These are initial spans, not guarantees
+  that 5,000 rows will fit; split any truncated leaf again.
+- **Throttling:** on HTTP 429 or a throttling message, stop launching new batches.
+  Let already dispatched reads settle and persist their successful results. Wait for the
+  indicated retry time (otherwise 60 s, doubling, at most 3 retries per failed call).
+  Re-batch only failed and not-yet-started calls with `max_per_subscription=1` for the
+  rest of the run. Do not immediately fan out retries or restart successful queries.
+  Cost data refreshes about every 4 hours, so reuse completed reads within one run.
 
 ```python
 from cost_query import prepare_cost_query

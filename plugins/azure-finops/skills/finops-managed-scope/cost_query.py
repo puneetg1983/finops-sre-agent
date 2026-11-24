@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from decimal import Decimal
+from itertools import zip_longest
 
 from scope import canonicalize_scope, filter_usage_details, resolve_managed_scopes
 
@@ -96,13 +97,16 @@ def plan_cost_queries(
     management_group_expansions=None,
     top=MAX_TOP,
     as_of=None,
+    slice_days=None,
 ):
-    """Return one ``query_costs`` argument object per effective managed scope.
+    """Return scoped ``query_costs`` arguments, optionally pre-sliced by UTC date.
 
     Management groups are expanded to their descendant subscriptions, so no query is
     ever issued at a broader scope than the managed boundary. Raises when a configured
     management group was not expanded. When ``as_of`` (today, UTC) is supplied, a
     ``start`` older than the tool's 92-day lookback is rejected up front.
+    ``slice_days`` bounds each Daily query's inclusive date span before retrieval,
+    avoiding predictable oversized history probes. It does not guarantee a row count.
     """
 
     resolved = resolve_managed_scopes(
@@ -137,6 +141,11 @@ def plan_cost_queries(
         filter_values = ",".join(filter_values)
     if len(_csv(group_by)) > 5:
         raise ValueError("query_costs accepts at most 5 groupBy dimensions")
+    if slice_days is not None:
+        if isinstance(slice_days, bool) or not isinstance(slice_days, int) or slice_days < 1:
+            raise ValueError("slice_days must be a positive integer")
+        if _text(granularity).casefold() != "daily":
+            raise ValueError("slice_days requires Daily granularity")
 
     plans = []
     for scope in resolved["effective_scopes"]:
@@ -154,8 +163,59 @@ def plan_cost_queries(
         if filter_dimension:
             arguments["filterDimension"] = filter_dimension
             arguments["filterValues"] = filter_values
-        plans.append(arguments)
+        if slice_days is None:
+            plans.append(arguments)
+        else:
+            first = start_date
+            while first <= end_date:
+                last = min(end_date, first + timedelta(days=slice_days - 1))
+                plans.append({**arguments, "from": first.isoformat(), "to": last.isoformat()})
+                first = last + timedelta(days=1)
     return plans
+
+
+def batch_cost_queries(queries, *, max_concurrent=4, max_per_subscription=2):
+    """Pack pending read calls into bounded parallel batches without changing arguments.
+
+    This is a pure scheduler, not an Azure client. Dispatch each batch together and wait
+    for it before starting the next. Resource groups in the same subscription share the
+    per-subscription bound, including calls from different query shapes. After throttling,
+    callers can re-batch remaining work with ``max_per_subscription=1``.
+    """
+    for name, value, ceiling in (
+        ("max_concurrent", max_concurrent, 4),
+        ("max_per_subscription", max_per_subscription, 2),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= ceiling:
+            raise ValueError(f"{name} must be an integer between 1 and {ceiling}")
+    by_shape, seen = {}, set()
+    for arguments in queries:
+        scope = canonicalize_scope(arguments["scope"])
+        if not scope.casefold().startswith("/subscriptions/"):
+            raise ValueError("cost query batches require expanded subscription or resource-group scopes")
+        first = _iso_date(arguments.get("from"), "from")
+        last = _iso_date(arguments.get("to"), "to")
+        if last < first:
+            raise ValueError("to must not be before from")
+        identity = (scope.casefold(), first, last, _shape(arguments), arguments.get("top"))
+        if identity in seen:
+            raise ValueError("duplicate pending cost query; reuse its saved result instead")
+        seen.add(identity)
+        subscription = scope.split("/")[2].casefold()
+        by_shape.setdefault(_shape(arguments), []).append((subscription, dict(arguments)))
+    pending = [item for wave in zip_longest(*by_shape.values()) for item in wave if item is not None]
+    batches = []
+    while pending:
+        batch, counts, remaining = [], {}, []
+        for subscription, arguments in pending:
+            if len(batch) < max_concurrent and counts.get(subscription, 0) < max_per_subscription:
+                batch.append(arguments)
+                counts[subscription] = counts.get(subscription, 0) + 1
+            else:
+                remaining.append((subscription, arguments))
+        batches.append(batch)
+        pending = remaining
+    return batches
 
 
 def split_cost_query(arguments):

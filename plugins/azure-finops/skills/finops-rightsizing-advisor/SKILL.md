@@ -174,10 +174,11 @@ the skill **rank by dollars** and size idle waste. Ids are matched case-insensit
 
 ```python
 from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query, sum_cost_by
+from cost_query import batch_cost_queries
 
 queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
                             start=START, end=END, as_of=TODAY, group_by="ResourceId")
-# call *_query_costs with each planned argument object, sequentially; split any result whose
+# dispatch each batch_cost_queries(queries) batch concurrently; split any result whose
 # properties.nextLink is not null with split_cost_query(arguments) and query both halves
 prepared = prepare_cost_query(results, managed_resources,
                               management_group_expansions=mg_descendants, window=(START, END))
