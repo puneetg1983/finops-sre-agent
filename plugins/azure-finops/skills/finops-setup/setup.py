@@ -627,6 +627,8 @@ def _values(agent_id, email, repo):
         "ANOMALY_CORRELATION": correlation,
         "ANOMALY_DELIVERY": delivery("Cost anomaly detected", "High"),
         "RIGHTSIZE_DELIVERY": delivery("Weekly rightsizing review", "Normal"),
+        "BRIEFING_REPO": (f"`{repo}` (tier-change actions open a pull request there)." if repo
+                          else "None; no repository was configured, so tier changes are proposed as Azure changes."),
     }
 
 

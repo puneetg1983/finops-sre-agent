@@ -2,4 +2,4 @@ Run `finops-cost-anomaly-detection` for every effective scope. Read its SKILL.md
 
 {{ANOMALY_CORRELATION}}
 
-If no anomalies are found, return exactly `No cost anomalies detected for <date>.` and do not email. Otherwise return the skill's dollar-ranked anomaly table with candidate-cause evidence, then {{ANOMALY_DELIVERY}}
+If no anomalies are found, return exactly `No cost anomalies detected for <date>.` and do not email. Otherwise return the skill's dollar-ranked anomaly table with candidate-cause evidence. For each anomaly add, in plain English: the likely cause with a confidence (High when a scale, SKU or create change on the same resource matches; Medium for another matching change; Low with "likely usage growth" when nothing matches), the owner if a tag or deployment caller shows it, and up to three next actions written as prompts the user can paste into this agent's chat. Every action that would change something must say it needs the user's approval first; never make the change in this task. Then {{ANOMALY_DELIVERY}}

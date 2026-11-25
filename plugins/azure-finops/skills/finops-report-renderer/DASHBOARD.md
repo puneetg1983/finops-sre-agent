@@ -1,7 +1,7 @@
 # Consolidated dashboard contract
 
-The setup task saves **FinOps: Dashboard**, one daily-refreshed Live Report with 17 sections.
-Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, `fluent-icons.svg`, and `microsoft-product-icons.svg`
+The setup task saves **FinOps: Dashboard**, one daily-refreshed Live Report with 18 sections. The first, **Decision briefing**, is built by `briefing.py` (see below).
+Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`, `dashboard.css`, `briefing.py`, `fluent-icons.svg`, and `microsoft-product-icons.svg`
 together. There are no third-party scripts, fonts, network calls or view-time Azure tools in
 dashboard HTML. CSP nonces are substituted by SaveReport. Without JavaScript, all sections remain
 readable; with it, tabs support keyboard navigation, the mobile section selector, table search and
@@ -203,6 +203,31 @@ subscription for confirmation and supports multiple subscriptions in the same te
 Runtime must verify the agent/connector's access to every selected subscription before
 collecting data; the caller's subscription picker is not proof of agent access.
 
+## Decision briefing
+
+`build_dashboard_model(..., briefing=inputs)` calls `briefing.build_briefing` and inserts the
+**Decision briefing** tab first. Without `briefing`, the tab shows **Not collected**. Accepted keys
+(any other key is rejected); each may be a list/dict when its check ran, `{"status": "unavailable",
+"reason": ...}` when it failed, or omitted when it was not attempted:
+
+- `anomalies`: `detect_anomalies` output (`dimension`, `value`, `date`, `kind`, `current_usd`,
+  `baseline_mean_usd`, `impact_usd`). Drops are skipped.
+- `change_events`: `{time, resourceId, kind, summary, actor?}`; `kind` is one of scale, sku, create,
+  deployment, config, commit, incident. Events from 2 days before a spike through the spike day are
+  matched by resource ID, resource group, or service. A matched scale/SKU/create change is High
+  confidence, any other precise match Medium, otherwise Low ("likely usage growth").
+- `owners`: `{scope, owner, source}`; the longest matching scope prefix wins, else **Unassigned**.
+- `rightsizing`: `recommend_rightsizing` recommendations, de-duplicated by resource ID. `idle`
+  items are cleanup decisions; `advisor` items are tier/size decisions. `validated: false` savings
+  are shown but excluded from totals.
+- `tag_gaps`: `{resourceId, monthly_usd, missing, proposed?, basis?}`.
+- `agent_cost`: `{period_usd, window, source, runs?}`, normalized to a 30-day month. Per-run rows
+  are shown only when supplied.
+- `repo`: `owner/name`; tier actions then open a pull request there.
+
+Findings have stable `F-xxxxxxxx` IDs, are ranked by impact and capped at 25 (the rest are counted).
+Actions are copy-to-chat prompts; any prompt that would change something ends with an explicit
+request to show the change and wait for approval. The renderer never runs actions itself.
 ## Core inputs (unchanged helper outputs)
 
 ### Explain missing and empty sources

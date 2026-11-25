@@ -30,6 +30,7 @@ _STATUS_LABELS = {
 _LIVE_REPORT_MAX_BYTES = 10_000_000
 _NONCE_ALLOWANCE_BYTES = 4096
 _TAB_ICONS = {
+    "briefing": "agents",
     "overview": "home",
     "explorer": "product-cost-management",
     "allocation": "people-team",
@@ -405,8 +406,44 @@ _DASHBOARD_SCRIPT = """
       row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
       if (!row.hidden) matches++;
     }
+    for (const card of panel.querySelectorAll('.decision-card')) {
+      const job = panel.dataset.jobFilter || '';
+      card.closest('li').hidden = (job && card.dataset.job !== job) ||
+        !card.textContent.toLocaleLowerCase().includes(term);
+      if (term && !card.closest('li').hidden) matches++;
+    }
     count.textContent = term ? matches + ' matching rows in this section' : '';
   }
+  document.querySelectorAll('[data-job-filter]').forEach(button => {
+    button.addEventListener('click', () => {
+      const panel = button.closest('[role="tabpanel"]');
+      panel.dataset.jobFilter = button.dataset.jobFilter;
+      panel.querySelectorAll('[data-job-filter]').forEach(chip =>
+        chip.setAttribute('aria-pressed', String(chip === button)));
+      filter();
+    });
+  });
+  document.querySelectorAll('.copy-prompt').forEach(button => {
+    button.addEventListener('click', () => {
+      const holder = button.closest('.decision-card, .rollup-card, .briefing-block');
+      const fallback = holder.querySelector('.prompt-fallback');
+      const text = fallback.querySelector('textarea');
+      text.value = button.dataset.prompt;
+      const label = button.querySelector('span');
+      const original = label.textContent;
+      const done = copied => {
+        fallback.hidden = copied;
+        if (!copied) { text.focus(); text.select(); return; }
+        label.textContent = 'Copied: paste in agent chat';
+        setTimeout(() => { label.textContent = original; }, 2400);
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(button.dataset.prompt).then(() => done(true), () => done(false));
+      } else {
+        done(false);
+      }
+    });
+  });
   function select(index, focus) {
     stopChartAnimations();
     tabs.forEach((tab, i) => {
@@ -435,6 +472,9 @@ _DASHBOARD_SCRIPT = """
   document.getElementById('clear-report-filters').addEventListener('click', () => {
     search.value = '';
     browsers.forEach(state => { state.selected.clear(); state.drill.clear(); });
+    document.querySelectorAll('[role="tabpanel"]').forEach(panel => { delete panel.dataset.jobFilter; });
+    document.querySelectorAll('[data-job-filter]').forEach(chip =>
+      chip.setAttribute('aria-pressed', String(chip.dataset.jobFilter === '')));
     filter();
   });
   document.querySelectorAll('[data-browse-services]').forEach(button => {
@@ -1411,6 +1451,104 @@ def _cost_history_controls(model):
     )
 
 
+def _briefing_panel(briefing):
+    findings = _list(briefing.get("findings"), "findings")
+    chips = ['<button type="button" data-job-filter="" aria-pressed="true">All '
+             f'<span>{len(findings)}</span></button>']
+    jobs = {}
+    for finding in findings:
+        jobs.setdefault(finding["job"], [finding["jobLabel"], 0])[1] += 1
+    for job, (label, count) in jobs.items():
+        chips.append(f'<button type="button" data-job-filter="{_escape(job)}" aria-pressed="false">'
+                     f'{_escape(label)} <span>{count}</span></button>')
+    cards = []
+    for finding in findings:
+        actions = "".join(
+            f'<button type="button" class="copy-prompt" data-prompt="{_escape(action["prompt"])}">'
+            f'<span>{_escape(action["label"])}</span><small>{_escape(action["approval"])}</small></button>'
+            for action in finding["actions"]
+        )
+        evidence = "".join(f"<li>{_escape(item)}</li>" for item in finding["evidence"])
+        confidence = _escape(finding["confidence"])
+        cards.append(
+            f'<article class="decision-card" data-job="{_escape(finding["job"])}" id="{_escape(finding["id"])}">'
+            f'<div class="decision-impact"><strong>{_escape(finding["impactText"])}</strong>'
+            f'<span>{_escape(finding["impactLabel"])}</span></div>'
+            '<div class="decision-body"><div class="decision-tags">'
+            f'<span class="decision-job">{_escape(finding["jobLabel"])}</span>'
+            f'<span class="confidence confidence-{confidence.lower()}">{confidence} confidence</span>'
+            f'<span class="decision-owner">{_icon("people-team")}<span>{_escape(finding["owner"])}</span>'
+            f'<small>{_escape(finding["ownerSource"])}</small></span>'
+            f'<span class="decision-id">{_escape(finding["id"])}</span></div>'
+            f'<h3>{_escape(finding["title"])}</h3><p class="decision-why">{_escape(finding["why"])}</p>'
+            + (f'<details class="decision-evidence"><summary>Evidence ({len(finding["evidence"])})</summary>'
+               f'<ul>{evidence}</ul></details>' if evidence else "")
+            + f'<div class="decision-actions">{actions}</div>'
+            '<div class="prompt-fallback" hidden><label>Copy this prompt into the SRE Agent chat'
+            '<textarea readonly rows="4"></textarea></label></div></div></article>'
+        )
+    hidden = briefing.get("hiddenFindings") or 0
+    queue = ('<ol class="decision-list">' + "".join(f"<li>{card}</li>" for card in cards) + "</ol>"
+             if cards else '<p class="decision-empty">Nothing needs a decision right now. '
+             'The checks below show what was reviewed.</p>')
+    if hidden:
+        queue += f'<p class="decision-more">{hidden} smaller decision(s) are not shown. Ask the agent for the full list.</p>'
+    rollups = "".join(
+        f'<article class="rollup-card"><h4>{_escape(item["title"])}</h4>'
+        f'<p class="rollup-value">{_escape(item["impactText"])} <span>{_escape(item["impactLabel"])}</span></p>'
+        f'<p>{_escape(item["why"])}</p><div class="decision-actions">'
+        + "".join(f'<button type="button" class="copy-prompt" data-prompt="{_escape(a["prompt"])}">'
+                  f'<span>{_escape(a["label"])}</span><small>{_escape(a["approval"])}</small></button>'
+                  for a in item["actions"])
+        + '</div><div class="prompt-fallback" hidden><label>Copy this prompt into the SRE Agent chat'
+        '<textarea readonly rows="4"></textarea></label></div></article>'
+        for item in _list(briefing.get("rollups"), "rollups") if item["job"] == "waste"
+    )
+    checks = "".join(
+        f'<li class="check-{_escape(check["state"].lower().replace(" ", "-"))}">'
+        f'<strong>{_escape(check["label"])}</strong><span class="check-state">{_escape(check["state"])}</span>'
+        f'<p>{_escape(check["detail"])}</p></li>'
+        for check in _list(briefing.get("checks"), "checks")
+    )
+    agent = next((item for item in _list(briefing.get("rollups"), "rollups") if item["job"] == "agent-cost"), None)
+    agent_html = ""
+    if agent:
+        runs = _list(briefing.get("agentRuns"), "agentRuns")
+        agent_html = (
+            '<section class="briefing-block agent-cost"><h3>What this agent cost</h3>'
+            f'<p>{_escape(agent["why"])}</p><ul>' + "".join(f"<li>{_escape(e)}</li>" for e in agent["evidence"])
+            + "</ul>" + (_sections({"sections": [{"title": "Recent runs", "columns": ["Run", "Started", "Cost"],
+                                                   "rows": runs}]}, heading_level=4, id_prefix="agent-runs")
+                         if runs else "")
+            + '<div class="decision-actions">' + "".join(
+                f'<button type="button" class="copy-prompt" data-prompt="{_escape(a["prompt"])}">'
+                f'<span>{_escape(a["label"])}</span><small>{_escape(a["approval"])}</small></button>'
+                for a in agent["actions"]) + '</div><div class="prompt-fallback" hidden><label>Copy this prompt '
+            'into the SRE Agent chat<textarea readonly rows="4"></textarea></label></div></section>'
+        )
+    owner_rows = _list(briefing.get("ownerQueue"), "ownerQueue")
+    owners = (_sections({"sections": [{
+        "title": "Savings by owner", "columns": ["Owner", "Items", "Monthly saving", "No estimate"],
+        "rows": owner_rows,
+        "description": "One list per team. Use the ticket button to send each team its items.",
+    }]}, heading_level=3, id_prefix="briefing-owners") if owner_rows else "")
+    return (
+        f'<section class="briefing-summary">{_icon("agents")}<div><h3>This week in one line</h3>'
+        f'<p>{_escape(briefing.get("headline"))}</p></div></section>'
+        '<section class="briefing-block"><div class="briefing-heading"><h3>Decisions</h3>'
+        '<div class="job-filters" role="group" aria-label="Filter decisions">' + "".join(chips) + '</div></div>'
+        '<p class="briefing-note">Action buttons copy a ready prompt. Paste it into the SRE Agent chat: '
+        'the agent prepares the change and waits for your approval. Nothing changes from this report.</p>'
+        + queue + '</section>'
+        + (f'<section class="briefing-block"><h3>Weekly waste review</h3><div class="rollups">{rollups}</div>'
+           f'{owners}</section>' if rollups else "")
+        + agent_html
+        + f'<section class="briefing-block"><h3>What the agent checked</h3>'
+        f'<p class="briefing-note">{_escape(briefing.get("checksSummary"))}. Evidence sections in the menu hold '
+        f'the full data.</p><ul class="check-list">{checks}</ul></section>'
+    )
+
+
 def _dashboard(model, intro=""):
     tabs = _list(model.get("tabs"), "tabs")
     if not tabs:
@@ -1428,7 +1566,7 @@ def _dashboard(model, intro=""):
             raise ValueError("invalid dashboard tab status")
         status_label = _escape(tab.get("displayStatus") or _STATUS_LABELS[status])
         icon = _TAB_ICONS.get(key, "chart-multiple")
-        group = {"overview": "Cost analysis", "rightsizing": "Efficiency",
+        group = {"briefing": "Decisions", "overview": "Cost analysis", "rightsizing": "Efficiency",
                  "governance": "Operations", "coverage": "Report information"}.get(key)
         if group:
             buttons.append(f'<div class="nav-group" role="presentation">{group}</div>')
@@ -1444,6 +1582,8 @@ def _dashboard(model, intro=""):
         panel_warnings = str(tab.get("reason") or "")
         next_step = str(tab.get("nextStep") or "")
         panel_body = _dashboard_chart(tab) + _sections(tab, heading_level=3, id_prefix=key)
+        if key == "briefing" and isinstance(tab.get("briefing"), dict):
+            panel_body = _briefing_panel(tab["briefing"])
         if key == "overview" and model.get("costHistory", {}).get("available"):
             sections = tab["sections"]
             panel_body = (

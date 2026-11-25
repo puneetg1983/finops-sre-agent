@@ -57,7 +57,7 @@ doesn't group by tags. Root management groups are expanded to subscriptions for 
 
 ## Dashboard sections
 
-Overview; cost explorer; ownership/allocation; billing/adjustments; budgets/forecasts; anomalies;
+Decision briefing (ranked decisions with likely causes, owners, approval-gated next actions and the agent's own cost); overview; cost explorer; ownership/allocation; billing/adjustments; budgets/forecasts; anomalies;
 rightsizing/waste; commitments; containers; AI spend; unit economics; sustainability;
 planning/scenarios; governance/scorecards; cost/reliability; prioritized actions; data/scope coverage.
 

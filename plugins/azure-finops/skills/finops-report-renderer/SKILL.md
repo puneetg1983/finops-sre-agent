@@ -1,6 +1,6 @@
 ---
 name: finops-report-renderer
-description: Renders the consolidated FinOps dashboard with 17 sections, keyboard-accessible tabs, local search, inline charts, source coverage and print/PDF. Also supports individual analysis adapters. Deterministic CSP-compliant static HTML; no Azure or connector calls.
+description: Renders the consolidated FinOps dashboard with 18 sections (led by a Decision briefing of ranked, approval-gated next actions), keyboard-accessible tabs, local search, inline charts, source coverage and print/PDF. Also supports individual analysis adapters. Deterministic CSP-compliant static HTML; no Azure or connector calls.
 ---
 
 ## Purpose
@@ -8,7 +8,7 @@ description: Renders the consolidated FinOps dashboard with 17 sections, keyboar
 **Scheduled default:** build the single **FinOps: Dashboard**, not six independent reports.
 Follow [DASHBOARD.md](DASHBOARD.md), call `build_dashboard_model` in `dashboard.py`, then
 `write_report` in `render.py`. Keep `dashboard.py`, `models.py`, `render.py`, `theme.css`,
-`dashboard.css`, `fluent-icons.svg`, and `microsoft-product-icons.svg` together. Dashboard charts,
+`dashboard.css`, `briefing.py`, `fluent-icons.svg`, and `microsoft-product-icons.svg` together. Dashboard charts,
 Microsoft Fluent system icons, and authorized Microsoft product artwork are inline SVG, with
 no external scripts or network dependencies. Product artwork has separate terms; see DASHBOARD.md.
 Source gaps retain their own visible tab and reason. Never replace a failed analysis with a

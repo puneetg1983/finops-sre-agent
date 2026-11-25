@@ -299,7 +299,7 @@ def test_daily_query_shapes_produce_scoped_90_day_history_and_30_day_baseline():
         window=default_window, scope_coverage=overview_30["scope_coverage"], cost_history=history,
     )
     assert model["costHistory"]["available"]
-    assert model["tabs"][0]["metrics"][0]["value"] == "$6.00"
+    assert model["metrics"][0]["value"] == "$6.00"
     assert all("elsewhere" not in str(record["fields"]).lower() for record in model["costHistory"]["explorer"])
 
 

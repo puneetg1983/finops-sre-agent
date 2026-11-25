@@ -205,7 +205,7 @@ def test_consolidation_has_one_title_all_tabs_and_honest_missing_sources():
         "total_usd": 12.30, "daily": [{"date": "2026-11-15", "cost_usd": 12.30}],
     })})
     assert model["title"] == "FinOps: Dashboard"
-    assert len(model["tabs"]) == 17
+    assert len(model["tabs"]) == 18
     assert tab(model, "overview")["status"] == "ready"
     assert tab(model, "commitments")["status"] == "unavailable"
     assert tab(model, "commitments")["metrics"] == []
@@ -445,8 +445,8 @@ def test_render_dashboard_is_escaped_network_free_nonce_safe_and_accessible():
     output = renderer.render_report(model)
     assert sources == original
     assert output == renderer.render_report(build(sources))
-    assert output.count('role="tab" ') == 17
-    assert output.count('role="tabpanel" ') == 17
+    assert output.count('role="tab" ') == 18
+    assert output.count('role="tabpanel" ') == 18
     assert evil not in output
     assert "&lt;img" in output
     assert '<script src=' not in output
@@ -481,7 +481,7 @@ def test_dashboard_icons_and_mobile_section_selector_are_self_contained():
     assert {"product-azure", "product-cost-management", "product-sre-agent"} <= set(uses)
     assert "Copyright (c) 2020 Microsoft Corporation" in output
     assert '<label for="section-select">Report section</label>' in output
-    assert output.count("<option ") == 17
+    assert output.count("<option ") == 18
     assert "Overview - Not collected" in output
     assert 'class="dashboard"' in output
     assert '<script src=' not in output

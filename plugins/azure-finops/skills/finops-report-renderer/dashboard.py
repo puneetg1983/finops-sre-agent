@@ -9,6 +9,12 @@ from pathlib import Path
 _spec = spec_from_file_location("finops_dashboard_models", Path(__file__).with_name("models.py"))
 _models = module_from_spec(_spec)
 _spec.loader.exec_module(_models)
+_bspec = spec_from_file_location("finops_dashboard_briefing", Path(__file__).with_name("briefing.py"))
+_briefing = module_from_spec(_bspec)
+_bspec.loader.exec_module(_briefing)
+
+BRIEFING_TAB = ("briefing", "Decision briefing",
+                "What changed, why, who owns it and what to do next, ranked by monthly impact.")
 
 TABS = (
     ("overview", "Overview", "Spend, trend and primary cost drivers."),
@@ -515,14 +521,31 @@ def _history(source_history, sources, scopes, default_window):
     }
 
 
+def _briefing_tab(inputs, refreshed_at, window, period):
+    tab_id, title, description = BRIEFING_TAB
+    base = {"id": tab_id, "title": title, "description": description, "refreshedAt": refreshed_at,
+            "period": period, "chart": None, "sections": [], "nextStep": ""}
+    if inputs is None:
+        return {**base, "status": "unavailable", "displayStatus": "Not collected", "metrics": [],
+                "source": "Not collected",
+                "reason": "The decision briefing was not built in this run. The evidence sections are still available."}
+    model = _briefing.build_briefing(inputs, generated_at=refreshed_at, window=window)
+    complete = all(check["state"] == "Checked" for check in model["checks"])
+    return {**base, "status": "ready" if complete else "partial",
+            "displayStatus": _briefing._count(len(model["findings"]) + model["hiddenFindings"], "decision"),
+            "source": "SRE Agent analysis of the evidence sections, change records and owners",
+            "reason": "", "metrics": model["metrics"], "briefing": model}
+
+
 def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
                           scope_mode="managed", scope_coverage=None, warnings=None,
-                          cost_history=None):
+                          cost_history=None, briefing=None):
     """Consolidate source envelopes; absent or failed inputs never become healthy zeros.
 
     Sources are keyed by tab id. Each envelope contains status (ready/partial/unavailable/
     unsupported), source, refreshed_at, window, scope_summary, data and optional reason.
     All calculations use provider-validated, prefiltered, non-overlapping inputs.
+    briefing holds build_briefing() inputs; it becomes the first tab.
     """
     sources = _models._object(sources, "sources")
     unknown = set(sources) - {tab[0] for tab in TABS if tab[0] != "coverage"}
@@ -679,13 +702,14 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
             ]),
         ],
     })
+    tabs.insert(0, _briefing_tab(briefing, refreshed_at, window, period))
     result = {
         "title": "FinOps: Dashboard",
         "description": "Cloud economics, operational risk and accountability in one workspace.",
         "refreshedAt": refreshed_at, "scopeSummary": scopes, "scopeMode": scope_mode,
         "window": list(window), "partial": any_partial or partial_coverage,
         "warnings": _models._stable_strings(all_warnings),
-        "metrics": tabs[0]["metrics"], "sections": [], "tabs": tabs,
+        "metrics": tabs[1]["metrics"], "sections": [], "tabs": tabs,
     }
     if history is not None:
         result["costHistory"] = history

@@ -41,7 +41,7 @@ Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md) · Des
 
 ## FinOps dashboard
 
-**FinOps: Dashboard** is one saved Live Report with 17 sections, rather than separate reports for
+**FinOps: Dashboard** is one saved Live Report with 18 sections, rather than separate reports for
 each analysis. Setup builds it immediately and schedules a daily refresh. It is a snapshot: opening
 the report does not query Azure, and recent costs can be incomplete while billing data arrives.
 The core cost views use Azure Cost Management pre-tax costs in USD, not invoice totals; budgets
@@ -49,6 +49,7 @@ retain their own currency and period.
 
 | What you can explore | Dashboard sections |
 |---|---|
+| What to do next | Decision briefing |
 | Spend and ownership | Overview, Cost explorer, Ownership & allocation, Billing & adjustments |
 | Risk and efficiency | Budgets & forecasts, Anomalies, Rightsizing & waste, Commitments |
 | Workload insights | Containers, AI spend, Unit economics, Sustainability |
@@ -67,6 +68,28 @@ Successful empty results show **No matching records**, and successful budget che
 show **No budgets configured** with a setup step. Sustainability can show sourced carbon emissions
 without energy data; missing energy is labeled **Not supplied by source**, never zero.
 
+### Decision briefing
+
+The dashboard opens on **Decision briefing**, the agent's answer to "what should I do this week?".
+It turns the analysis below into a short, ranked list of decisions instead of more charts. It covers
+six recurring FinOps jobs:
+
+| Job | What the agent does for you |
+|---|---|
+| Explain a cost spike | Matches each spike to Azure changes (scale, SKU change, new resource, deployment, commit or incident) from the 2 days before it, and gives a likely cause with High, Medium or Low confidence. |
+| Weekly waste review | Groups savings by owner, so each team sees only its own list. |
+| Fix tags for chargeback | Lists costly resources missing owner or cost-center tags and proposes values from the resource group or deployer. |
+| Clean up orphaned and idle resources | Shows unattached disks, idle resources and similar items, with evidence. |
+| Change a tier or size | Prepares the change as a pull request when a repository is configured, otherwise as an Azure change. |
+| What did the agent cost? | Shows the agent's own monthly cost and the validated savings it found. |
+
+Each decision shows the money involved, why it happened, the evidence, the owner and up to three
+next actions. An action copies a ready-made prompt to paste into the agent chat. **Nothing is changed
+automatically**: every prompt that would change something asks the agent to show the exact change and
+wait for your approval. Each check also shows whether it ran, was not attempted, or could not run
+(for example, missing access), so an empty list never hides a check that failed. Savings without
+utilization data are shown but not counted as validated. Per-run agent cost appears only when that
+data is available.
 ### Using the dashboard
 
 - **Choose dates:** Overview and Cost explorer default to the latest 30 inclusive UTC days. When
