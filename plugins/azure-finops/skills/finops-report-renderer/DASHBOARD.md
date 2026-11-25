@@ -131,6 +131,10 @@ deduplicate recommendations or claim that overlapping savings can all be realize
 Without JavaScript, the complete table and initial breakdowns remain available. Print includes
 all resource rows regardless of interactive filters.
 
+AI spend's resource table separates subscription ID, resource group, resource type and name.
+Expand a name for the full resource ID; it remains searchable. Missing identity components
+are shown as `(unknown)` rather than inferred from the billed service.
+
 Resource lists default to the **top 10 matching records**, with 25 and 50 available.
 Cost and savings ranking uses the displayed signed amount, with unquantified savings last.
 Search, filters, charts and totals always use all matching records, including those outside

@@ -131,6 +131,24 @@ def _short_resource(resource_id):
     return resource_id.rstrip("/").rsplit("/", 1)[-1] if resource_id else "(unknown)"
 
 
+def _resource_identity_parts(resource_id):
+    parts = resource_id.strip("/").split("/")
+    subscription = (
+        parts[1] if len(parts) > 1 and parts[0].casefold() == "subscriptions" and parts[1]
+        else "(unknown)"
+    )
+    group = (
+        parts[3] if len(parts) > 3 and parts[0].casefold() == "subscriptions"
+        and parts[2].casefold() == "resourcegroups" and parts[3] else "(unknown)"
+    )
+    providers = [i for i, part in enumerate(parts) if i % 2 == 0 and part.casefold() == "providers"]
+    resource = parts[providers[-1] + 1:] if providers else []
+    if len(resource) < 3 or len(resource) % 2 == 0 or not all(resource):
+        return subscription, group, "(unknown)", "(unknown)"
+    resource_type = "/".join([resource[0], *resource[1::2]])
+    return subscription, group, resource_type, resource[-1]
+
+
 def _validated(value, field):
     if value is None:
         return "verify first"
@@ -1242,6 +1260,14 @@ def build_ai_spend_model(
         )
     )
 
+    resource_rows = []
+    for name, rid, kind, family, cost, pct, top_model in resources:
+        subscription, group, resource_type, parsed_name = _resource_identity_parts(rid)
+        resource_rows.append([
+            subscription, group, resource_type, name or parsed_name, _money(cost),
+            _percent(pct), family, kind, top_model,
+        ])
+
     drivers = []
     for index, row in enumerate(
         _objects(result.get("top_drivers"), "result.top_drivers")
@@ -1338,12 +1364,13 @@ def build_ai_spend_model(
             },
             {
                 "title": "By resource",
-                "description": "AI resources ranked by attributed cost.",
-                "columns": ["Resource", "Resource ID", "Kind", "Service family", "Cost", "Share", "Top model"],
-                "rows": [
-                    [name, rid, kind, family, _money(cost), _percent(pct), top_model]
-                    for name, rid, kind, family, cost, pct, top_model in resources
+                "description": "AI resources ranked by attributed cost. Expand a name to see its full resource ID.",
+                "columns": [
+                    "Subscription ID", "Resource group", "Resource type", "Name", "Cost",
+                    "Share", "Service family", "Kind", "Top model",
                 ],
+                "rows": resource_rows,
+                "resourceIds": [rid for _, rid, _, _, _, _, _ in resources],
                 "emptyMessage": "No AI resource spend was found.",
             },
             {

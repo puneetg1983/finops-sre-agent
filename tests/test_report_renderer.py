@@ -587,6 +587,76 @@ def test_ai_spend_adapter_separates_agent_service_cost_from_model_tokens():
     assert ["meter type", "agent_service", "$241.21", "88.0%"] in split_rows
 
 
+@pytest.mark.parametrize(
+    ("resource_id", "expected"),
+    [
+        (
+            f"{SCOPE}/providers/Microsoft.CognitiveServices/accounts/foundry",
+            ["sub", "managed", "Microsoft.CognitiveServices/accounts", "foundry"],
+        ),
+        (
+            "/SUBSCRIPTIONS/s/RESOURCEGROUPS/rg/providers/Microsoft.Sql/servers/sql/databases/db",
+            ["s", "rg", "Microsoft.Sql/servers/databases", "db"],
+        ),
+        (
+            f"{SCOPE}/providers/Microsoft.Compute/virtualMachines/vm/providers/"
+            "Microsoft.Insights/diagnosticSettings/logs",
+            ["sub", "managed", "Microsoft.Insights/diagnosticSettings", "logs"],
+        ),
+        (
+            "/subscriptions/s/providers/Microsoft.CognitiveServices/accounts/ai",
+            ["s", "(unknown)", "Microsoft.CognitiveServices/accounts", "ai"],
+        ),
+        (
+            f"{SCOPE}/providers/Microsoft.CognitiveServices/accounts",
+            ["sub", "managed", "(unknown)", "(unknown)"],
+        ),
+        ("", ["(unknown)", "(unknown)", "(unknown)", "(unknown)"]),
+    ],
+)
+def test_ai_spend_resource_columns_split_arm_identity(resource_id, expected):
+    result = _ai_spend()
+    result["by_resource"] = [{**result["by_resource"][0], "resourceId": resource_id, "resourceName": ""}]
+
+    model = models.build_ai_spend_model(result, **_context())
+    section = next(item for item in model["sections"] if item["title"] == "By resource")
+
+    assert section["columns"][:4] == ["Subscription ID", "Resource group", "Resource type", "Name"]
+    assert section["rows"][0][:4] == expected
+    assert section["resourceIds"] == [resource_id]
+
+
+def test_ai_spend_resource_id_is_available_in_expanded_name_and_escaped():
+    result = _ai_spend()
+    resource_id = f"{SCOPE}/providers/Microsoft.CognitiveServices/accounts/{EVIL}"
+    result["by_resource"][0]["resourceId"] = resource_id
+    model = models.build_ai_spend_model(result, **_context())
+
+    output = renderer.render_report(model)
+    assert "<th>Resource ID</th>" not in output
+    assert '<details class="resource-identity"><summary>&lt;script&gt;' in output
+    assert f"<code>{renderer._escape(resource_id)}</code>" in output
+    assert EVIL not in output
+
+
+def test_ai_resource_details_follow_cost_sorted_rows():
+    result = _ai_spend()
+    first = result["by_resource"][0]
+    second = {
+        **first,
+        "resourceId": f"{SCOPE}/providers/Microsoft.App/agents/second",
+        "resourceName": "second",
+        "monthly_usd": 50,
+    }
+    result["by_resource"].append(second)
+    model = models.build_ai_spend_model(result, **_context())
+    section = next(item for item in model["sections"] if item["title"] == "By resource")
+
+    assert section["rows"][0][3] == "second"
+    assert section["resourceIds"][0] == second["resourceId"]
+    assert section["resourceIds"][1] == first["resourceId"]
+
+
 def test_cost_vs_reliability_adapter_preserves_quality_and_signal_fields():
     model = models.build_cost_vs_reliability_model(_reliability(), **_context())
 
@@ -706,8 +776,8 @@ def test_all_adapters_render_empty_states(builder, empty):
         (
             models.build_ai_spend_model,
             _ai_spend,
-            "88207db1b6badb6503031f7b4919fdaacc4701356ec75a55f2d090214acdbdac",
-            "49fd61d859ce085ce34644677712f3d4d5c6217583406d084cc455bd7f6ff5e6",
+            "bb41d64f6ec60c2cb24cb5e2740b2c218b710fcb72c462ebdd2b8aa49b438eed",
+            "4ea50ea5789d2cba58e66701eb5eddc0ae08e6b3da3af97685b429387d88eff5",
         ),
         (
             models.build_cost_vs_reliability_model,

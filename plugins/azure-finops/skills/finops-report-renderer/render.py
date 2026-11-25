@@ -6,9 +6,13 @@ import html
 import json
 import math
 from decimal import Decimal
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_spec = spec_from_file_location("finops_renderer_models", Path(__file__).with_name("models.py"))
+_models = module_from_spec(_spec)
+_spec.loader.exec_module(_models)
 
 
 _CSP = """default-src 'none';
@@ -875,15 +879,33 @@ def _sections(model, heading_level=2, id_prefix="section"):
         if rows and not columns:
             raise ValueError(f"sections[{index}].columns is required when rows exist")
 
+        resource_ids = section.get("resourceIds")
+        name_column = None
+        if resource_ids is not None:
+            resource_ids = _list(resource_ids, f"sections[{index}].resourceIds")
+            if len(resource_ids) != len(rows) or not all(isinstance(item, str) for item in resource_ids):
+                raise ValueError(f"sections[{index}].resourceIds must contain one text ID per row")
+            if columns.count("Name") != 1:
+                raise ValueError(f"sections[{index}].resourceIds requires one Name column")
+            name_column = columns.index("Name")
+
         body = []
         for row_index, row in enumerate(rows):
             if not isinstance(row, list) or len(row) != len(columns):
                 raise ValueError(
                     f"sections[{index}].rows[{row_index}] must match columns"
                 )
-            body.append(
-                "<tr>" + "".join(f"<td>{_escape(cell)}</td>" for cell in row) + "</tr>"
-            )
+            cells = []
+            for column_index, cell in enumerate(row):
+                value = _escape(cell)
+                if name_column == column_index and resource_ids[row_index]:
+                    value = (
+                        f'<details class="resource-identity"><summary>{value}</summary>'
+                        '<span class="resource-context">Full resource ID: '
+                        f'<code>{_escape(resource_ids[row_index])}</code></span></details>'
+                    )
+                cells.append(f"<td>{value}</td>")
+            body.append("<tr>" + "".join(cells) + "</tr>")
 
         if section.get("breakdown") and heading_level > 2:
             rendered.append(_resource_browser(section, f"{id_prefix}-{index}"))
@@ -897,9 +919,10 @@ def _sections(model, heading_level=2, id_prefix="section"):
                 '<p class="table-hint">Scroll horizontally to view more columns.</p>'
                 if dashboard_table and len(columns) > 2 else ""
             )
+            table_class = "table-wrap resource-identity-table" if resource_ids is not None else "table-wrap"
             table_wrap = (
-                f'<div class="table-wrap" role="region" tabindex="0" aria-label="{_escape(title)} table">'
-                if dashboard_table else '<div class="table-wrap">'
+                f'<div class="{table_class}" role="region" tabindex="0" aria-label="{_escape(title)} table">'
+                if dashboard_table else f'<div class="{table_class}">'
             )
             column_scope = ' scope="col"' if dashboard_table else ""
             content = (
@@ -1188,14 +1211,7 @@ def _chart_tones(values):
 
 
 def _resource_type_from_id(identity):
-    parts = identity.strip("/").split("/")
-    providers = [i for i, part in enumerate(parts) if i % 2 == 0 and part.casefold() == "providers"]
-    if not providers:
-        return "(unknown)"
-    resource = parts[providers[-1] + 1:]
-    if len(resource) < 3 or len(resource) % 2 == 0 or not all(resource):
-        return "(unknown)"
-    return "/".join([resource[0], *resource[1::2]]).casefold()
+    return _models._resource_identity_parts(identity)[2].casefold()
 
 
 def _service_icon(value):
