@@ -1,7 +1,7 @@
 {
   "name": "azure-finops",
-  "version": "1.0.0",
-  "description": "Read-only Azure FinOps pack with one consolidated dashboard: cost, allocation, billing, budgets, anomalies, rightsizing, commitments, containers, AI, unit economics, sustainability, planning, governance, reliability and coverage. Setup asks for Managed resources or Everything, grants missing read-only roles on behalf of the user (OBO), and creates a daily dashboard plus managed-resource anomaly alerts. Optional data sources show explicit coverage gaps. Budget changes remain human-reviewed scripts.",
+  "version": "1.1.0",
+  "description": "Read-only Azure FinOps pack with one consolidated dashboard: cost, allocation, billing, budgets, anomalies, rightsizing, commitments, containers, AI, unit economics, sustainability, planning, governance, reliability and coverage. Setup asks for Managed resources, Everything or Selected subscriptions and creates a daily dashboard plus managed-resource anomaly alerts. After plugin updates, the FinOps update skill preserves customer settings, refreshes scheduled tasks and rebuilds the existing dashboard. Optional data sources show explicit coverage gaps. Budget changes remain human-reviewed scripts.",
   "license": "MIT",
   "skills": ["skills/"]
 }

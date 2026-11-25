@@ -1,7 +1,7 @@
 # Azure SRE Agent FinOps plugin
 
 A standard [Azure SRE Agent](https://learn.microsoft.com/azure/sre-agent/) plugin marketplace with one
-plugin, the read-only **azure-finops** plugin. It contains 11 skills and an `.mcp.json` that declares
+plugin, the read-only **azure-finops** plugin. It contains 12 skills and an `.mcp.json` that declares
 the Azure Resource Manager (ARM) MCP server used for cost data: no installer script, no hooks, no
 out-of-band API calls.
 
@@ -34,8 +34,10 @@ Missing access leaves setup pending, never silently narrowing the selection.
 Optional inputs (such as namespace allocation, business volumes, carbon data and billing exports)
 show explicit setup, access or data gaps until connected, never made-up metrics.
 See the [Cloudability reporting research and coverage matrix](docs/CLOUDABILITY-COVERAGE.md).
-Say the setup sentence again to repair or update; old schedules are retired only after the new
-dashboard saves successfully. Historical reports are not deleted.
+After installing a plugin update, type **"Update the FinOps setup"** in chat to refresh the
+scheduled task prompts and rebuild the existing dashboard. The update preserves the saved scope,
+subscriptions, alert settings, task selection and schedules. Obsolete schedules are retired only
+after the refreshed dashboard saves successfully; historical reports are not deleted.
 
 Details: [plugins/azure-finops/README.md](plugins/azure-finops/README.md) · Design: [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -119,7 +121,7 @@ For details on data sources, limitations and the dashboard contract, see
 .github/plugin/marketplace.json     marketplace manifest
 plugins/azure-finops/plugin.json    plugin manifest  { "skills": ["skills/"] }
 plugins/azure-finops/.mcp.json      ARM MCP server requirement (connector configured by the user)
-plugins/azure-finops/skills/        11 skills (finops-setup + 10 analysis skills)
+plugins/azure-finops/skills/        12 skills (setup + update + 10 analysis skills)
 tests/                              offline pytest suite
 evals/                              offline eval harness from the source pack
 docs/DESIGN.md                      one-page design spec

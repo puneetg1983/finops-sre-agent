@@ -5,12 +5,12 @@
   },
   "metadata": {
     "description": "Standard Azure SRE Agent plugin marketplace for the read-only Azure FinOps pack",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "plugins": [
     {
       "name": "azure-finops",
-      "description": "Read-only Azure FinOps with one consolidated, daily-refreshed dashboard. Setup requires a Managed resources or Everything scope choice and grants missing read-only cost roles on your behalf (OBO). Includes managed-resource anomaly alerts and explicit coverage gaps for optional reporting inputs. Budget changes remain human-reviewed scripts.",
+      "description": "Read-only Azure FinOps with one consolidated, daily-refreshed dashboard. Setup requires a Managed resources, Everything or Selected subscriptions scope choice and grants missing read-only cost roles on your behalf (OBO). After a plugin update, the FinOps update skill preserves customer settings, refreshes scheduled tasks and rebuilds the existing dashboard. Includes managed-resource anomaly alerts and explicit coverage gaps for optional reporting inputs. Budget changes remain human-reviewed scripts.",
       "source": "./plugins/azure-finops"
     }
   ]

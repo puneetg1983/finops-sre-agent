@@ -35,7 +35,7 @@ automation are not implemented.
 
 - One exact report identity: **FinOps: Dashboard**. Refresh the whole report once per daily task;
   don't let independent section tasks overwrite one another or combine different scope policies.
-- Keep all 17 sections in navigation. Show `ready`, `partial`, `unavailable` or `unsupported`,
+- Keep all 18 sections in navigation. Show `ready`, `partial`, `unavailable` or `unsupported`,
   source, actual source timestamp, period and a concrete gap/next action.
 - Share prepared data in one run. Validate each query shape independently; don't double count
   daily and resource-total cost, credits and amortized bases, overlapping benefits, or idle/shared costs.

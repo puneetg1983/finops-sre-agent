@@ -1,17 +1,19 @@
 ---
 name: finops-setup
-description: Sets up, repairs or refreshes Azure FinOps from chat. MUST ask whether the dashboard covers Managed resources, Everything or Selected subscriptions (one or multiple). Grants missing read-only roles on behalf of the user (OBO), creates one daily consolidated dashboard task plus managed-resource anomaly alerts, and builds the single Live Report immediately.
+description: Sets up Azure FinOps from chat. MUST ask whether the dashboard covers Managed resources, Everything or Selected subscriptions (one or multiple). Grants missing read-only roles on behalf of the user (OBO), creates one daily consolidated dashboard task plus managed-resource anomaly alerts, and builds the single Live Report immediately. Use finops-update for explicit post-plugin-update refreshes.
 ---
 
 # FinOps setup
 
-Run setup end to end. Re-running is idempotent: check roles, update tasks by exact name and reuse
-the single dashboard report ID. Do not create the former six individual reports.
+Run initial setup end to end. Re-running setup is for an explicitly requested scope change or
+repair; for refreshing after a plugin update, use **finops-update** so all saved customer settings
+are preserved. Setup is idempotent: check roles, update tasks by exact name and reuse the single
+dashboard report ID. Do not create the former six individual reports.
 
 ## Step 0: Mandatory dashboard scope choice
 
 **MUST ask the end user for input and wait for an explicit answer before scope/grant discovery or task
-changes**, including on setup/repair runs. Only read identity/subscription metadata needed to present
+changes** on initial setup and any scope change. Only read identity/subscription metadata needed to present
 the choices before that answer. Use the platform's user-input tool, not a rhetorical
 question or an inferred default:
 
@@ -151,6 +153,9 @@ subscriptions; changing the list requires explicit setup confirmation.
 2. Run `python3 $SKILL_DIR/setup.py task-plan --agent-resource-id <AGENT_RESOURCE_ID>
    --existing tmp/finops-setup/existing.json <selected scope flags>
    [--alert-email <e>] [--github-repo <owner/repo>] > tmp/finops-setup/plan.json`.
+   The plan embeds a versioned setup record and installed-plugin fingerprint in the dashboard task
+   prompt. Omitted email, repository and schedule values are preserved from the existing setup;
+   pass an explicit empty email or repository only when the user asks to turn that option off.
 3. Copy each task's strings exactly; never paraphrase `agentPrompt`.
    Create via CreateScheduledMonitoringTask with `useCurrentThread=false`, then
    UpdateScheduledTask with `agentMode="review", threadGrouping="new"`.
@@ -180,6 +185,9 @@ For managedResources-empty Everything or Selected subscriptions setups, do not r
 
 Reuse the exact-name **FinOps: Dashboard** report ID. Duplicate exact names are an explicit conflict,
 not permission to choose or create another. Verify the saved version, then complete task retirement.
+After a successful save, refresh `existing.json`, rerun `task-plan` with `--mark-applied`, and
+update the dashboard task with its exact returned prompt. This records the plugin revision only
+after the report is verified. Do not mark the revision applied when the report save fails.
 This is a scheduled static snapshot with local tab/search/print interactions, not browser-time Azure
 access or real-time billing.
 

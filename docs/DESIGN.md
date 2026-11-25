@@ -1,14 +1,18 @@
 # Azure FinOps dashboard design
 
-A standard Azure SRE Agent plugin: 11 skills plus an ARM MCP server declaration. Plugin install
+A standard Azure SRE Agent plugin: 12 skills plus an ARM MCP server declaration. Plugin install
 alone does not provision tasks, reports, RBAC or subagents; the in-chat setup skill closes that gap.
+After a plugin update, the explicit **"Update the FinOps setup"** chat command refreshes existing
+scheduled task prompts and rebuilds the dashboard without resetting the saved customer settings.
 
 **Experience:** Install > "Set up FinOps for me" > choose Managed resources / Everything / Selected subscriptions >
 approve missing read-only OBO grants > open **FinOps: Dashboard**.
 
 ## One report, not a report collection
 
-The daily **14:30 UTC** dashboard task renders 17 sections: overview, resource explorer,
+The daily **14:30 UTC** dashboard task renders 18 sections, beginning with a Decision briefing
+that ranks FinOps actions and includes evidence-backed, approval-gated next steps. It then shows
+overview, resource explorer,
 ownership/allocation, billing/adjustments, budgets/forecasts, anomalies, rightsizing/waste,
 commitments, containers, AI, unit economics, sustainability, planning, governance/scorecards,
 cost/reliability, prioritized actions and source/scope coverage.

@@ -290,7 +290,7 @@ def test_plugin_metadata_is_standard_and_read_only():
 
 def test_every_skill_has_frontmatter_matching_folder():
     skills = sorted(p for p in (PLUGIN / "skills").iterdir() if p.is_dir())
-    assert len(skills) == 11
+    assert len(skills) == 12
     for folder in skills:
         head = (folder / "SKILL.md").read_text().split("---")[1]
         assert f"name: {folder.name}" in head
@@ -303,6 +303,11 @@ def test_setup_skill_contract():
     assert "**Managed resources**, **Everything**, and **Selected subscriptions**" in text
     assert "on behalf of the user (OBO)" in text
     assert "Never use the terminal for `az`" in text
+    update = (PLUGIN / "skills" / "finops-update" / "SKILL.md").read_text()
+    assert '"update the FinOps setup"' in update
+    assert "--mark-applied" in update and "SaveReport" in update
+    assert "Never broaden" in update and "task selection and schedules" in update
+    assert "FINOPS_SETUP_STATE_JSON" in update
     assert "Check roles by listing assignments" in text
     assert "rbac-script" in text  # fallback documented
     assert "Build the single dashboard now" in text
@@ -347,8 +352,12 @@ def test_dashboard_scope_persists_but_never_changes_anomaly_boundary():
     assert "STRICT MANAGED-SCOPE PREAMBLE" in anomaly["agentPrompt"]
     assert ROOT_MG not in anomaly["agentPrompt"]
     assert ROOT_MG in dashboard["agentPrompt"]
-    existing = [dict(id="dashboard", name=dashboard["taskName"],
-                     cronExpression=dashboard["cronExpression"], agentPrompt=dashboard["agentPrompt"])]
+    existing = [
+        dict(id="anomaly", name=anomaly["taskName"], cronExpression=anomaly["cronExpression"],
+             agentPrompt=anomaly["agentPrompt"]),
+        dict(id="dashboard", name=dashboard["taskName"],
+             cronExpression=dashboard["cronExpression"], agentPrompt=dashboard["agentPrompt"]),
+    ]
     repeat = setup.task_plan(AGENT, existing=existing)
     assert repeat["dashboardPolicy"] == first["dashboardPolicy"]
     assert repeat["tasks"][1]["action"] == "unchanged"
@@ -356,7 +365,7 @@ def test_dashboard_scope_persists_but_never_changes_anomaly_boundary():
     assert edited["dashboardPolicy"] == first["dashboardPolicy"]
     managed = setup.task_plan(AGENT, existing=existing, scope_mode="managed")
     assert managed["dashboardPolicy"] == {"mode": "managed", "scopes": []}
-    existing[0]["agentPrompt"] = "policy missing"
+    existing[1]["agentPrompt"] = "policy missing"
     with pytest.raises(setup.SetupError, match="ask for scope"):
         setup.task_plan(AGENT, existing=existing)
 
@@ -460,13 +469,138 @@ def test_selected_subscriptions_preserves_policy_on_task_repair_and_isolates_ano
     assert "DASHBOARD_POLICY_JSON:" not in anomaly["agentPrompt"]
     assert "STRICT MANAGED-SCOPE PREAMBLE" in anomaly["agentPrompt"]
     assert "microsoft-product-icons.svg" in dashboard["agentPrompt"]
-    existing = [{"id": "dashboard", "name": dashboard["taskName"],
-                 "cronExpression": dashboard["cronExpression"], "agentPrompt": dashboard["agentPrompt"]}]
+    existing = [
+        {"id": "anomaly", "name": anomaly["taskName"], "cronExpression": anomaly["cronExpression"],
+         "agentPrompt": anomaly["agentPrompt"]},
+        {"id": "dashboard", "name": dashboard["taskName"],
+         "cronExpression": dashboard["cronExpression"], "agentPrompt": dashboard["agentPrompt"]},
+    ]
     repaired = setup.task_plan(AGENT, existing=existing, email="a@contoso.com")
     assert repaired["dashboardPolicy"] == first["dashboardPolicy"]
-    assert repaired["tasks"][1]["action"] == "unchanged"
+    assert repaired["tasks"][1]["action"] == "update"
     with pytest.raises(setup.SetupError, match="explicit scope mode"):
         setup.task_plan(AGENT, existing=existing, dashboard_scopes=[scopes[0]])
+
+
+def test_task_plan_preserves_customer_settings_and_marks_revision_after_report_save(monkeypatch):
+    first = setup.task_plan(
+        AGENT, email="finops@contoso.com", repo="contoso/infra",
+        scope_mode="everything", dashboard_scopes=[ROOT_MG],
+        cron_overrides={"cost-anomaly": "15 9 * * 1", "dashboard-report": "45 9 * * 1"},
+    )
+    existing = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in first["tasks"]
+    ]
+    assert first["updateRequired"] is False
+    assert first["pluginVersion"] == "1.1.0"
+    before_applied = setup.task_plan(AGENT, existing=existing)
+    assert before_applied["alertEmail"] == "finops@contoso.com"
+    assert before_applied["githubRepo"] == "contoso/infra"
+    assert before_applied["dashboardPolicy"] == {"mode": "everything", "scopes": [ROOT_MG]}
+    assert [task["cronExpression"] for task in before_applied["tasks"]] == ["15 9 * * 1", "45 9 * * 1"]
+    assert before_applied["updateRequired"] is True
+    assert "email `finops@contoso.com`" in before_applied["tasks"][0]["agentPrompt"]
+    assert "`contoso/infra`" in before_applied["tasks"][0]["agentPrompt"]
+
+    updated_tasks = [
+        {"id": task["existingTaskId"] or task["id"], "name": task["taskName"],
+         "cronExpression": task["cronExpression"], "agentPrompt": task["agentPrompt"]}
+        for task in before_applied["tasks"]
+    ]
+    committed = setup.task_plan(AGENT, existing=updated_tasks, mark_applied=True)
+    assert committed["setupState"]["appliedRevision"] == committed["pluginRevision"]
+    assert committed["updateRequired"] is False
+    dashboard = next(task for task in committed["tasks"] if task["id"] == "dashboard-report")
+    updated_tasks = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in committed["tasks"]
+    ]
+    settled = setup.task_plan(AGENT, existing=updated_tasks)
+    assert {task["action"] for task in settled["tasks"]} == {"unchanged"}
+
+    updated_tasks = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in settled["tasks"]
+    ]
+    monkeypatch.setattr(setup, "_plugin_revision", lambda: "a" * 64)
+    stale = setup.task_plan(AGENT, existing=updated_tasks)
+    assert stale["updateRequired"] is True
+    assert stale["pluginRevision"] == "a" * 64
+    assert next(task for task in stale["tasks"] if task["id"] == "dashboard-report")["action"] == "update"
+    applied_tasks = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in stale["tasks"]
+    ]
+    marked = setup.task_plan(AGENT, existing=applied_tasks, mark_applied=True)
+    assert marked["setupState"]["appliedRevision"] == "a" * 64
+    assert marked["updateRequired"] is False
+
+
+def test_task_plan_preserves_dashboard_only_installation():
+    first = setup.task_plan(AGENT, only=["dashboard-report"])
+    existing = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in first["tasks"]
+    ]
+    repeated = setup.task_plan(AGENT, existing=existing)
+    assert [task["id"] for task in repeated["tasks"]] == ["dashboard-report"]
+    assert repeated["setupState"]["settings"]["configuredTasks"] == ["dashboard-report"]
+
+
+def test_task_plan_rejects_malformed_saved_state_and_allows_explicit_opt_out():
+    first = setup.task_plan(AGENT, email="finops@contoso.com", repo="contoso/infra")
+    existing = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in first["tasks"]
+    ]
+    dashboard = next(task for task in existing if task["name"] == "FinOps: Dashboard (Live Report, Daily)")
+    dashboard["agentPrompt"] = dashboard["agentPrompt"].replace(
+        setup._STATE_PREFIX, setup._STATE_PREFIX + "{bad-json}")
+    with pytest.raises(setup.SetupError, match="state is invalid"):
+        setup.task_plan(AGENT, existing=existing)
+
+    existing = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": task["agentPrompt"]}
+        for task in first["tasks"]
+    ]
+    disabled = setup.task_plan(AGENT, email="", repo="", existing=existing)
+    assert disabled["alertEmail"] == "" and disabled["githubRepo"] == ""
+    assert "do not send email" in disabled["tasks"][0]["agentPrompt"]
+    assert "GitHub correlation is disabled" in disabled["tasks"][0]["agentPrompt"]
+
+
+def test_task_plan_migrates_known_legacy_settings_and_rejects_ambiguous_ones():
+    first = setup.task_plan(
+        AGENT, email="finops@contoso.com", repo="contoso/infra",
+        scope_mode="everything", dashboard_scopes=[ROOT_MG],
+    )
+    legacy = [
+        {"id": task["id"], "name": task["taskName"], "cronExpression": task["cronExpression"],
+         "agentPrompt": "\n".join(line for line in task["agentPrompt"].splitlines()
+                                   if not line.startswith(setup._STATE_PREFIX))}
+        for task in first["tasks"]
+    ]
+    migrated = setup.task_plan(AGENT, existing=legacy)
+    assert migrated["updateRequired"] is True
+    assert migrated["alertEmail"] == "finops@contoso.com"
+    assert migrated["githubRepo"] == "contoso/infra"
+    assert migrated["dashboardPolicy"] == {"mode": "everything", "scopes": [ROOT_MG]}
+    assert migrated["setupState"]["settings"]["configuredTasks"] == ["cost-anomaly", "dashboard-report"]
+
+    dashboard = next(task for task in legacy if task["name"] == "FinOps: Dashboard (Live Report, Daily)")
+    dashboard["agentPrompt"] = "DASHBOARD_POLICY_JSON: {\"mode\":\"managed\",\"scopes\":[]}\ncustom prompt"
+    anomaly = next(task for task in legacy if task["name"] == "FinOps: Cost Anomaly Detection (Daily)")
+    anomaly["agentPrompt"] = "custom prompt"
+    with pytest.raises(setup.SetupError, match="cannot be recovered"):
+        setup.task_plan(AGENT, existing=legacy)
 
 
 def test_selected_subscriptions_cli_round_trip(tmp_path, capsys):

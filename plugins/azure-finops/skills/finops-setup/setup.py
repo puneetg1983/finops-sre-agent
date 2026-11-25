@@ -36,6 +36,7 @@ the agent runs the az commands it prints through its built-in Azure CLI tools.
 """
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -94,6 +95,8 @@ _TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 _SUB = re.compile(r"/subscriptions/([^/]+)", re.IGNORECASE)
 _RG = re.compile(r"/subscriptions/([^/]+)/resourceGroups/([^/]+)", re.IGNORECASE)
 _MG = re.compile(r"/providers/Microsoft\.Management/managementGroups/([^/]+)", re.IGNORECASE)
+_STATE_PREFIX = "FINOPS_SETUP_STATE_JSON: "
+_STATE_VERSION = 1
 
 
 class SetupError(ValueError):
@@ -657,14 +660,135 @@ def _existing_tasks(data):
     return out
 
 
-def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overrides=None,
-              scope_mode=None, dashboard_scopes=None):
+def _plugin_revision():
+    """Fingerprint installed plugin files so an explicit update can detect stale setup."""
+    digest = hashlib.sha256()
+    plugin_root = ROOT.parent.parent
+    for path in sorted(plugin_root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        relative = path.relative_to(plugin_root).as_posix().encode()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _plugin_version():
+    plugin = json.loads((ROOT.parent.parent / "plugin.json").read_text())
+    version = plugin.get("version")
+    if not isinstance(version, str) or not version:
+        raise SetupError("plugin version is missing")
+    return version
+
+
+def _task_fingerprints(tasks):
+    result = {}
+    for task in tasks:
+        source = TASKS_DIR / task["prompt"]
+        digest = hashlib.sha256(source.read_bytes())
+        digest.update(SCOPE_PROMPT.read_bytes())
+        if task["id"] == "dashboard-report":
+            digest.update((TASKS_DIR / "prompts" / "_dashboard-scope.txt").read_bytes())
+        result[task["id"]] = digest.hexdigest()
+    return result
+
+
+def _setup_state(prompt):
+    lines = [line[len(_STATE_PREFIX):] for line in prompt.splitlines()
+             if line.startswith(_STATE_PREFIX)]
+    if len(lines) > 1:
+        raise SetupError("existing FinOps setup state is duplicated; do not update until repaired")
+    if not lines:
+        return None
+    try:
+        state = json.loads(lines[0])
+    except ValueError as exc:
+        raise SetupError("existing FinOps setup state is invalid; ask the user to review it") from exc
+    if not isinstance(state, dict) or state.get("schemaVersion") != _STATE_VERSION:
+        raise SetupError("unsupported FinOps setup state version; ask the user before migration")
+    settings = state.get("settings")
+    if not isinstance(settings, dict):
+        raise SetupError("existing FinOps setup settings are missing; ask the user before migration")
+    task_ids = {task["id"] for task in _load_manifest()[0]}
+    try:
+        policy = settings["dashboardPolicy"]
+        dashboard_policy(policy["mode"], policy["scopes"])
+        optional_email(settings["alertEmail"])
+        optional_repo(settings["githubRepo"])
+        configured = settings["configuredTasks"]
+        schedules = settings["schedules"]
+        if (not isinstance(configured, list) or not configured
+                or len(set(configured)) != len(configured) or set(configured) - task_ids):
+            raise ValueError
+        if not isinstance(schedules, dict) or set(schedules) - task_ids:
+            raise ValueError
+        if any(not _CRON.fullmatch(value) or len(value.split()) != 5 for value in schedules.values()):
+            raise ValueError
+        if not re.fullmatch(r"[0-9a-f]{64}", state.get("pluginRevision", "")):
+            raise ValueError
+        if not isinstance(state.get("pluginVersion"), str) or not state["pluginVersion"]:
+            raise ValueError
+        if state.get("appliedRevision") and not re.fullmatch(r"[0-9a-f]{64}", state["appliedRevision"]):
+            raise ValueError
+        applied = state.get("appliedTaskTemplates")
+        if not isinstance(applied, dict) or set(applied) - task_ids or any(
+                not re.fullmatch(r"[0-9a-f]{64}", value) for value in applied.values()):
+            raise ValueError
+        desired = state.get("desiredTaskTemplates")
+        if not isinstance(desired, dict) or set(desired) - task_ids or any(
+                not re.fullmatch(r"[0-9a-f]{64}", value) for value in desired.values()):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SetupError("existing FinOps setup state is malformed; ask the user before migration") from exc
+    return state
+
+
+def _legacy_settings(current, policy):
+    """Recover settings from known setup prompts; ambiguous legacy values must be confirmed."""
+    by_id = {task["id"]: task for task in _load_manifest()[0]}
+    anomaly = next((item for item in current if item["name"] == by_id["cost-anomaly"]["defaultName"]), None)
+    tasks = [key for key, definition in by_id.items()
+             if any(item["name"] == definition["defaultName"] for item in current)]
+    if not tasks:
+        return None
+    email = ""
+    repo = ""
+    if anomaly:
+        match = re.search(r"email `([^`]+)` with subject", anomaly["prompt"])
+        if match:
+            email = match.group(1)
+        elif "do not send email; no alert email was configured" not in anomaly["prompt"]:
+            email = None
+        match = re.search(r"commits plus merged PRs from `([^`]+)`", anomaly["prompt"])
+        if match:
+            repo = match.group(1)
+        elif "GitHub correlation is disabled because no repository was configured" not in anomaly["prompt"]:
+            repo = None
+    if email is None or repo is None:
+        raise SetupError("legacy email or repository settings cannot be recovered; ask the user to confirm them")
+    return {
+        "dashboardPolicy": policy,
+        "alertEmail": email,
+        "githubRepo": repo,
+        "configuredTasks": tasks,
+        "schedules": {task["id"]: next(item["cron"] for item in current
+                                      if item["name"] == task["defaultName"])
+                      for task in by_id.values()
+                      if task["id"] in tasks and next(item for item in current
+                                                       if item["name"] == task["defaultName"])["cron"]},
+    }
+
+
+def task_plan(agent_id, email=None, repo=None, existing=None, only=None, cron_overrides=None,
+              scope_mode=None, dashboard_scopes=None, mark_applied=False):
     agent_id = agent_resource_id(agent_id)
-    email, repo = optional_email(email), optional_repo(repo)
     tasks, retired = _load_manifest()
     ids = [t["id"] for t in tasks]
-    only = [o.strip() for o in (only or []) if o.strip()]
-    bad = [o for o in only if o not in ids]
+    only = [o.strip() for o in only if o.strip()] if only is not None else None
+    bad = [o for o in (only or []) if o not in ids]
     if bad:
         raise SetupError("unknown task id(s): " + ", ".join(bad) + "; valid: " + ", ".join(ids))
     cron_overrides = dict(cron_overrides or {})
@@ -672,37 +796,99 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
         if key not in ids or not _CRON.fullmatch(expr) or len(expr.split()) != 5:
             raise SetupError(f"invalid cron override {key}={expr}")
     current = _existing_tasks(existing or [])
-    values = _values(agent_id, email, repo)
+    task_by_id = {task["id"]: task for task in tasks}
+    dashboard_task = next((item for item in current
+                          if item["name"] == task_by_id["dashboard-report"]["defaultName"]), None)
+    saved_state = _setup_state(dashboard_task["prompt"]) if dashboard_task else None
+    if saved_state:
+        settings = saved_state["settings"]
+        prior_policy = dashboard_policy(settings["dashboardPolicy"]["mode"],
+                                        settings["dashboardPolicy"]["scopes"])
+    else:
+        settings = None
+        prior_policy = None
     if scope_mode is None:
         if dashboard_scopes:
             raise SetupError("dashboard scopes require an explicit scope mode")
-        previous = [task for task in current
-                    if task["name"] == "FinOps: Dashboard (Live Report, Daily)"]
+        previous = [task for task in current if task["name"] == task_by_id["dashboard-report"]["defaultName"]]
         if len(previous) > 1:
             raise SetupError("multiple existing dashboard tasks; cancel duplicates first")
         if previous:
-            lines = [line.removeprefix("DASHBOARD_POLICY_JSON: ")
-                     for line in previous[0]["prompt"].splitlines()
-                     if line.startswith("DASHBOARD_POLICY_JSON: ")]
-            if len(lines) != 1:
-                raise SetupError("existing dashboard policy missing; ask for scope again")
-            try:
-                prior = json.loads(lines[0])
-            except ValueError as exc:
-                raise SetupError("existing dashboard policy invalid; ask for scope again") from exc
-            if not isinstance(prior, dict) or set(prior) != {"mode", "scopes"}:
-                raise SetupError("existing dashboard policy invalid; ask for scope again")
-            policy = dashboard_policy(prior["mode"], prior["scopes"])
+            if prior_policy:
+                policy = prior_policy
+            else:
+                lines = [line.removeprefix("DASHBOARD_POLICY_JSON: ")
+                         for line in previous[0]["prompt"].splitlines()
+                         if line.startswith("DASHBOARD_POLICY_JSON: ")]
+                if len(lines) != 1:
+                    raise SetupError("existing dashboard policy missing; ask for scope again")
+                try:
+                    prior = json.loads(lines[0])
+                except ValueError as exc:
+                    raise SetupError("existing dashboard policy invalid; ask for scope again") from exc
+                if not isinstance(prior, dict) or set(prior) != {"mode", "scopes"}:
+                    raise SetupError("existing dashboard policy invalid; ask for scope again")
+                policy = dashboard_policy(prior["mode"], prior["scopes"])
+                settings = _legacy_settings(current, policy)
         else:
             policy = dashboard_policy("managed", dashboard_scopes)
     else:
         policy = dashboard_policy(scope_mode, dashboard_scopes)
+    if settings:
+        if email is None:
+            email = settings["alertEmail"]
+        if repo is None:
+            repo = settings["githubRepo"]
+    email, repo = optional_email(email), optional_repo(repo)
+    values = _values(agent_id, email, repo)
+
+    if only is None and settings:
+        only = settings["configuredTasks"]
+    selected_task_ids = [task_id for task_id in (only or ids) if task_id in ids]
+    if mark_applied and not dashboard_task:
+        raise SetupError("cannot mark setup applied before the dashboard task exists")
+    schedules = dict(settings.get("schedules", {})) if settings else {}
+    for item in current:
+        task_id = next((key for key, definition in task_by_id.items()
+                        if definition["defaultName"] == item["name"]), None)
+        if task_id and item["cron"]:
+            schedules[task_id] = item["cron"]
+    for task_id, expr in cron_overrides.items():
+        schedules[task_id] = expr
+    for task_id in selected_task_ids:
+        schedules.setdefault(task_id, task_by_id[task_id]["defaultCron"])
+
+    fingerprints = _task_fingerprints(tasks)
+    plugin_revision = _plugin_revision()
+    plugin_version = _plugin_version()
+    applied_revision = (plugin_revision if mark_applied else
+                        saved_state.get("appliedRevision", "") if saved_state else "")
+    applied_templates = dict(saved_state.get("appliedTaskTemplates", {})) if saved_state else {}
+    if mark_applied:
+        applied_templates.update({task_id: fingerprints[task_id] for task_id in selected_task_ids})
+    config = {
+        "schemaVersion": _STATE_VERSION,
+        "pluginVersion": plugin_version,
+        "pluginRevision": plugin_revision,
+        "appliedRevision": applied_revision,
+        "appliedTaskTemplates": applied_templates,
+        "desiredTaskTemplates": {task_id: fingerprints[task_id] for task_id in selected_task_ids},
+        "settings": {
+            "dashboardPolicy": policy,
+            "alertEmail": email,
+            "githubRepo": repo,
+            "configuredTasks": selected_task_ids if only is not None and not settings else
+                               settings["configuredTasks"] if settings else selected_task_ids,
+            "schedules": {key: value for key, value in schedules.items()
+                          if key in selected_task_ids},
+        },
+    }
     values["DASHBOARD_POLICY"] = json.dumps(policy, sort_keys=True)
     scope_text = SCOPE_PROMPT.read_text()
 
     plan = []
     for task in tasks:
-        if only and task["id"] not in only:
+        if task["id"] not in selected_task_ids:
             continue
         task_values = dict(values)
         if task.get("defaultReportName"):
@@ -713,7 +899,9 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
         )
         prompt = _substitute(preamble, task_values) + "\n\n" + _substitute(
             (TASKS_DIR / task["prompt"]).read_text(), task_values)
-        cron = cron_overrides.get(task["id"], task["defaultCron"])
+        if task["id"] == "dashboard-report":
+            prompt += "\n\n" + _STATE_PREFIX + json.dumps(config, sort_keys=True, separators=(",", ":"))
+        cron = cron_overrides.get(task["id"], schedules.get(task["id"], task["defaultCron"]))
         matches = [c for c in current if c["name"] == task["defaultName"]]
         if len(matches) > 1:
             raise SetupError(f"multiple existing tasks named {task['defaultName']!r}; cancel duplicates first")
@@ -741,6 +929,15 @@ def task_plan(agent_id, email="", repo="", existing=None, only=None, cron_overri
     ]
     return {"agentResourceId": agent_id, "alertEmail": email, "githubRepo": repo,
             "dashboardPolicy": policy,
+            "pluginVersion": plugin_version,
+            "pluginRevision": plugin_revision,
+            "updateRequired": bool(dashboard_task and not mark_applied and (
+                not saved_state or
+                saved_state.get("appliedRevision") != plugin_revision or
+                any(saved_state.get("appliedTaskTemplates", {}).get(key) != value
+                    for key, value in fingerprints.items()
+                    if key in settings["configuredTasks"]))),
+            "setupState": config,
             "tasks": plan, "retire": retire}
 
 
@@ -789,13 +986,15 @@ def main(argv=None):
 
     p = sub.add_parser("task-plan")
     p.add_argument("--agent-resource-id", required=True)
-    p.add_argument("--alert-email", default="")
-    p.add_argument("--github-repo", default="")
+    p.add_argument("--alert-email")
+    p.add_argument("--github-repo")
     p.add_argument("--existing", type=Path)
     p.add_argument("--only", default="")
     p.add_argument("--cron", action="append", default=[], metavar="ID=EXPR")
     p.add_argument("--scope-mode", choices=("managed", "everything", "subscriptions"))
     p.add_argument("--dashboard-scope", action="append", default=[])
+    p.add_argument("--mark-applied", action="store_true",
+                   help="record the current plugin revision after the dashboard was saved")
 
     args = parser.parse_args(argv)
     try:
@@ -826,7 +1025,7 @@ def main(argv=None):
                 overrides[key.strip()] = expr.strip()
             out = task_plan(args.agent_resource_id, args.alert_email, args.github_repo,
                             existing, args.only.split(",") if args.only else None, overrides,
-                            args.scope_mode, args.dashboard_scope)
+                            args.scope_mode, args.dashboard_scope, args.mark_applied)
         print(json.dumps(out, ensure_ascii=False, indent=2))
     except SetupError as exc:
         print(f"finops-setup: {exc}", file=sys.stderr)

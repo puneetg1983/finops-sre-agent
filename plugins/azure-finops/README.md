@@ -1,8 +1,14 @@
 # azure-finops plugin
 
-A read-only Azure SRE Agent plugin with 11 skills and **one consolidated FinOps dashboard**.
+A read-only Azure SRE Agent plugin with 12 skills and **one consolidated FinOps dashboard**.
 Install from the Plugin Marketplace, configure the ARM MCP connector, then say
 **"Set up FinOps for me"**.
+
+After updating the plugin, type **"Update the FinOps setup"** in chat. The `finops-update` skill
+refreshes the existing scheduled task prompts and rebuilds the existing dashboard in place. It
+preserves the saved dashboard scope and subscriptions, alert email, GitHub repository, configured
+task set and schedules. The update is explicit; installing a plugin does not change existing agent
+tasks or reports by itself.
 
 ## Mandatory scope choice and OBO permissions
 
@@ -79,7 +85,12 @@ See [research and capability gaps](../../docs/CLOUDABILITY-COVERAGE.md) and
 | FinOps: Cost Anomaly Detection (Daily) | `0 14 * * *` | Managed-resource alert in task result, optional email |
 | FinOps: Dashboard (Live Report, Daily) | `30 14 * * *` | One **FinOps: Dashboard** report |
 
-Setup creates/updates tasks in review mode and builds the dashboard immediately.
+Setup creates/updates tasks in review mode and builds the dashboard immediately. It stores a
+versioned setup record and a fingerprint of the installed plugin in the dashboard task prompt.
+The update command uses that record to preserve customer settings and detect stale setup; after
+the report saves successfully, it records the applied revision. Older installations are migrated
+only when their scope and settings can be recovered safely; otherwise the user is asked to confirm
+the missing values.
 After the replacement report is successfully saved, setup retires the old individual-report
 schedules by exact name. It never deletes historical reports or custom schedules.
 Repair reuses the dashboard ID. Email/GitHub/schedule-only edits preserve the stored scope policy;
@@ -94,6 +105,7 @@ access controls for the intended audience.
 | Skill | Purpose |
 |---|---|
 | `finops-setup` | Scope choice, OBO permissions, tasks, immediate dashboard, safe migration |
+| `finops-update` | Preserve setup settings, refresh scheduled prompts and rebuild the existing dashboard after plugin updates |
 | `finops-managed-scope` | Managed-resource guard plus isolated explicit dashboard-policy resolver |
 | `finops-cost-anomaly-detection` | Spikes with deployment/Activity Log and optional GitHub correlation |
 | `finops-rightsizing-advisor` | Advisor/utilization-backed rightsizing and waste |
