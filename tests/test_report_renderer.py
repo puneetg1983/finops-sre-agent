@@ -568,9 +568,23 @@ def test_ai_spend_adapter_keeps_token_and_compute_separate():
 
     assert model["metrics"][3]["value"] == "$19.83"
     assert model["metrics"][4]["value"] == "$0.20"
+    assert model["metrics"][5]["value"] == "$0.00"
     assert model["chart"]["labels"] == ["gpt-4o", "gpt-4o-mini"]
     assert model["sections"][-3]["rows"][0][-1] == "$14.83"
     assert model["sections"][-2]["rows"][0][-1] == "verify first"
+
+
+def test_ai_spend_adapter_separates_agent_service_cost_from_model_tokens():
+    result = _ai_spend()
+    result["by_meter_type"].append(
+        {"meter_type": "agent_service", "monthly_usd": 241.21, "pct": 88.0}
+    )
+    model = models.build_ai_spend_model(result, **_context())
+
+    assert model["metrics"][3]["value"] == "$19.83"
+    assert model["metrics"][5]["value"] == "$241.21"
+    split_rows = model["sections"][0]["rows"]
+    assert ["meter type", "agent_service", "$241.21", "88.0%"] in split_rows
 
 
 def test_cost_vs_reliability_adapter_preserves_quality_and_signal_fields():
@@ -692,8 +706,8 @@ def test_all_adapters_render_empty_states(builder, empty):
         (
             models.build_ai_spend_model,
             _ai_spend,
-            "25086384ce560ced1ffd97a95af5c8f0a36d721bb92826239c5c33ae955dddd4",
-            "1b64f5c00decc93a6033074b75bf836d6c8d4074831a336bed72c7c074f7a796",
+            "88207db1b6badb6503031f7b4919fdaacc4701356ec75a55f2d090214acdbdac",
+            "49fd61d859ce085ce34644677712f3d4d5c6217583406d084cc455bd7f6ff5e6",
         ),
         (
             models.build_cost_vs_reliability_model,

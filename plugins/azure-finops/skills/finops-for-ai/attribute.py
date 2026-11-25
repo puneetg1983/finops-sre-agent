@@ -11,9 +11,9 @@ resource, formerly AI Services) is the SAME resource type with `kind=AIServices`
 model deployed INSIDE a Foundry account bills under `Microsoft.CognitiveServices` with the
 same token meter names but `kind=AIServices` — so filtering on `kind==OpenAI` or a meter
 category literally named "Azure OpenAI" DROPS Foundry-hosted model spend. This module keys off
-`consumedService` (both kinds roll up under `Microsoft.CognitiveServices`) and never gates on
-kind. It also covers `Microsoft.MachineLearningServices` (Foundry hub/project compute, managed
-online endpoints, fine-tuning) so ML compute isn't dropped.
+`consumedService` (both kinds roll up under `Microsoft.CognitiveServices`), service name and
+meter category. It also covers `Microsoft.MachineLearningServices` (Foundry hub/project compute,
+managed online endpoints, fine-tuning) and Foundry Tools such as Azure SRE Agent units.
 
 Line-item shape (one dict per cost row, already flattened by the skill; query_costs rows get
 consumedService from the resource type's provider namespace, and the UsageDetails fallback
@@ -22,6 +22,7 @@ projects consumedService + meterSubCategory + meterName):
     {
         "cost": 12.34,                                   # USD
         "consumedService": "Microsoft.CognitiveServices",
+        "serviceName": "Azure OpenAI",
         "meterCategory": "Azure OpenAI",
         "meterSubCategory": "gpt-4o",                    # often carries the model
         "meterName": "gpt-4o-0513 Inp glbl Tokens",
@@ -33,8 +34,8 @@ Optional `resource_kinds {resourceId: kind}` (from a Resource Graph GET) lets th
 each resource OpenAI vs AIServices vs the ML kind; omit it and the label is just left off.
 
 Output: a single dict (see attribute_ai_costs) — total AI spend, breakdowns by service family,
-meter type (model-token vs compute vs other-cognitive), resource, and model, the top blended
-cost drivers, and light read-only optimization hints. Feed it to a table / Live Report.
+meter type (model-token vs compute vs agent service vs other-cognitive), resource, and model, the
+top blended cost drivers, and light read-only optimization hints. Feed it to a table / Live Report.
 """
 
 from collections import defaultdict
@@ -43,6 +44,14 @@ from collections import defaultdict
 _SERVICE_FAMILY = {
     "microsoft.cognitiveservices": "Cognitive Services / OpenAI",
     "microsoft.machinelearningservices": "Machine Learning",
+}
+_BILLING_SERVICE_FAMILY = {
+    "azure openai": "Cognitive Services / OpenAI",
+    "cognitive services": "Cognitive Services / OpenAI",
+    "foundry models": "Foundry Models",
+    "azure machine learning": "Machine Learning",
+    "machine learning": "Machine Learning",
+    "foundry tools": "Foundry Tools",
 }
 
 # meter-type buckets
@@ -91,31 +100,62 @@ def _resource_name(resource_id) -> str:
     return rid.rsplit("/", 1)[-1] if "/" in rid else rid
 
 
-def _service_family(consumed_service) -> str:
-    """Report family for a consumedService; None if it isn't an AI service we track."""
+def _service_family(consumed_service, service_name=None, meter_category=None) -> str:
+    """Report family from Azure's service namespace or recognized AI billing labels."""
+    for label in (service_name, meter_category):
+        family = _BILLING_SERVICE_FAMILY.get(_norm(label))
+        if family:
+            return family
     return _SERVICE_FAMILY.get(_norm(consumed_service))
 
 
-def ai_resource_types(resource_types):
-    """Return the AI resource types (exact spellings, sorted) from Cost Management values.
+def is_ai_cost_item(item) -> bool:
+    """Whether a UsageDetails or Cost Management row belongs in AI spend."""
+    return _service_family(
+        item.get("consumedService"),
+        item.get("serviceName") or item.get("service_name"),
+        item.get("meterCategory") or item.get("meter_category"),
+    ) is not None
 
-    Use with an ARM MCP ``query_costs`` totals query grouped by ``ResourceType``: the
-    returned values can be passed verbatim as ``filterValues`` for a ``ResourceType``
-    filter. Keys off the provider namespace, never the account kind.
+
+def ai_resource_types(resource_types):
+    """Return AI resource types from strings or ResourceType/ServiceName discovery rows.
+
+    Use the returned values verbatim as ``filterValues`` for a ``ResourceType`` filter.
+    Discovery rows may include ``ServiceName`` so Foundry Tools resources outside the
+    Cognitive Services namespace (for example Microsoft.App/agents) are included.
     """
-    return sorted(
-        {str(value) for value in resource_types or () if _service_family(str(value).split("/")[0])},
-        key=str.casefold,
-    )
+    result = set()
+    for value in resource_types or ():
+        if isinstance(value, dict):
+            resource_type = str(
+                value.get("resourceType") or value.get("resource_type") or ""
+            ).strip()
+            if not resource_type:
+                continue
+            namespace = resource_type.split("/", 1)[0]
+            if _service_family(
+                namespace,
+                value.get("serviceName") or value.get("service_name"),
+                value.get("meterCategory") or value.get("meter_category"),
+            ):
+                result.add(resource_type)
+        else:
+            resource_type = str(value).strip()
+            if resource_type and _service_family(resource_type.split("/", 1)[0]):
+                result.add(resource_type)
+    return sorted(result, key=str.casefold)
 
 
 def _meter_type(family, item) -> str:
-    """Classify a line as model-token, compute, or other-cognitive spend."""
+    """Classify a line as model-token, compute, agent service, or other AI spend."""
     name = _norm(item.get("meterName"))
     sub = _norm(item.get("meterSubCategory"))
     cat = _norm(item.get("meterCategory"))
     haystack = " ".join((name, sub, cat))
 
+    if family == "Foundry Tools" or "agent unit" in haystack:
+        return "agent_service"
     if any(h in haystack for h in _TOKEN_HINTS):
         return _MODEL_TOKEN
     if any(h in haystack for h in _COMPUTE_HINTS):
@@ -173,7 +213,7 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
     """Attribute AI spend across resources, models, service families, and meter types.
 
     line_items      list of cost rows (already filtered to AI service families).
-                    Rows whose consumedService isn't an AI family are ignored defensively.
+                    Rows without a recognized namespace, ServiceName or MeterCategory are ignored.
     resource_kinds  optional {resourceId: kind} (from Resource Graph) to label a resource
                     OpenAI / AIServices / the ML kind; omit to leave the label off.
 
@@ -200,6 +240,7 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
     model_cost = defaultdict(float)                 # model -> usd (model_token lines only)
     model_resources = defaultdict(set)              # model -> {resourceId}
     res_cost = defaultdict(float)                   # resourceId -> usd
+    res_compute_cost = defaultdict(float)           # resourceId -> compute usd
     res_meta = {}                                   # resourceId -> {name, family}
     res_model_cost = defaultdict(lambda: defaultdict(float))  # resourceId -> {model: usd}
     driver_cost = defaultdict(float)                # (resourceId, model, meter_type) -> usd
@@ -208,7 +249,11 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
         cost = item.get("cost")
         if not isinstance(cost, (int, float)):
             continue
-        family = _service_family(item.get("consumedService"))
+        family = _service_family(
+            item.get("consumedService"),
+            item.get("serviceName") or item.get("service_name"),
+            item.get("meterCategory") or item.get("meter_category"),
+        )
         if family is None:
             continue  # not an AI service family — skip defensively
 
@@ -222,6 +267,8 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
         fam_cost[family] += cost
         type_cost[mtype] += cost
         res_cost[rid] += cost
+        if mtype == _COMPUTE:
+            res_compute_cost[rid] += cost
         res_meta.setdefault(rid, {"name": _resource_name(rid), "family": family})
 
         model = ""
@@ -270,6 +317,7 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
     hints = _build_hints(
         model_cost=model_cost,
         res_cost=res_cost,
+        res_compute_cost=res_compute_cost,
         res_meta=res_meta,
         res_model_cost=res_model_cost,
     )
@@ -288,7 +336,7 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
     }
 
 
-def _build_hints(*, model_cost, res_cost, res_meta, res_model_cost):
+def _build_hints(*, model_cost, res_cost, res_compute_cost, res_meta, res_model_cost):
     """Light, read-only, COST-ONLY advisory hints. Never claims idle without utilization —
     true idle/under-use detection needs Azure Monitor token metrics (deferred to v2)."""
     hints = []
@@ -322,7 +370,7 @@ def _build_hints(*, model_cost, res_cost, res_meta, res_model_cost):
 
     # 3. Compute with no model tokens — a Cognitive/ML resource billing compute but no token
     #    usage may be an unused deployment/endpoint. Flag to VERIFY (needs metrics to confirm).
-    for rid, usd in res_cost.items():
+    for rid, usd in res_compute_cost.items():
         if usd <= 0:
             continue
         if not res_model_cost.get(rid):  # no model-token spend recorded for this resource

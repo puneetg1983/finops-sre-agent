@@ -84,6 +84,51 @@ def test_machine_learning_compute_included():
     assert out["by_meter_type"][0]["meter_type"] == "compute"
 
 
+def test_sre_agent_foundry_tools_cost_is_in_ai_spend_but_not_model_tokens():
+    agent_id = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.App/agents/sre"
+    out = attribute_ai_costs([
+        _line(241.21, consumed="Microsoft.App", cat="Foundry Tools",
+              sub="Foundry Tools", name="SRE Agent Unit", rid=agent_id),
+        _line(100.0, sub="gpt-4o", name="gpt-4o Tokens"),
+    ])
+    assert out["total_ai_usd"] == 341.21
+    assert {row["service_family"]: row["monthly_usd"] for row in out["by_service_family"]} == {
+        "Foundry Tools": 241.21,
+        "Cognitive Services / OpenAI": 100.0,
+    }
+    assert {row["meter_type"]: row["monthly_usd"] for row in out["by_meter_type"]} == {
+        "agent_service": 241.21,
+        "model_token": 100.0,
+    }
+    assert [row["model"] for row in out["by_model"]] == ["gpt-4o"]
+    assert all(row["meter_type"] == "model_token" for row in out["top_drivers"] if row["model"])
+    assert "compute_no_tokens_verify" not in {hint["type"] for hint in out["hints"]}
+
+
+def test_ai_resource_discovery_includes_foundry_tools_resource_types_only():
+    assert attribute.ai_resource_types([
+        {"resourceType": "Microsoft.App/agents", "serviceName": "Foundry Tools"},
+        {"resourceType": "Microsoft.App/containerApps", "serviceName": "Azure Container Apps"},
+        {"resourceType": "Microsoft.CognitiveServices/accounts", "serviceName": "Foundry Models"},
+        {"resourceType": "Microsoft.MachineLearningServices/workspaces", "serviceName": "Azure Machine Learning"},
+    ]) == [
+        "Microsoft.App/agents",
+        "Microsoft.CognitiveServices/accounts",
+        "Microsoft.MachineLearningServices/workspaces",
+    ]
+
+
+def test_usage_details_fallback_accepts_foundry_tools_label():
+    assert attribute.is_ai_cost_item({
+        "consumedService": "Microsoft.App",
+        "meterCategory": "Foundry Tools",
+    })
+    assert not attribute.is_ai_cost_item({
+        "consumedService": "Microsoft.App",
+        "meterCategory": "Azure Container Apps",
+    })
+
+
 def test_non_ai_line_is_ignored():
     out = attribute_ai_costs([
         _line(100.0, name="gpt-4o Tokens"),

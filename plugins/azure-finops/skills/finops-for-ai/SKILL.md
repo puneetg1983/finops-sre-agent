@@ -1,6 +1,6 @@
 ---
 name: finops-for-ai
-description: FinOps for Azure AI spend, read-only. Attributes Azure AI cost per resource, model, and service family from ARM MCP query_costs (Consumption UsageDetails as a disclosed fallback) — deliberately covering BOTH classic Azure OpenAI (kind=OpenAI) and Azure AI Foundry (kind=AIServices) accounts (both bill under Microsoft.CognitiveServices) PLUS Microsoft.MachineLearningServices (Foundry hub/project compute, managed online endpoints, fine-tuning), so Foundry-hosted model spend is never dropped. Splits token/model-meter spend from compute-meter spend, ranks the top cost drivers, and emits light read-only optimization hints, using the bundled attribute.py with the runtime's sandbox Python tool. Use for "what is our AI/OpenAI bill", per-model cost breakdown, and AI cost governance.
+description: FinOps for Azure AI spend, read-only. Attributes AI cost per resource, model, Azure billing service, and meter from ARM MCP query_costs (Consumption UsageDetails as a disclosed fallback) — covering Azure OpenAI, Azure AI Foundry models and tools, SRE Agent units, Cognitive Services, and Machine Learning compute. Discovers costs using both ResourceType and ServiceName so Foundry Tools resources outside the Cognitive Services namespace are included. Keeps agent-service charges in the AI total but separate from model-token analysis, ranks top cost drivers, and emits read-only optimization hints using bundled attribute.py. Use for AI spend, agent costs, model breakdowns, and AI cost governance.
 ---
 
 ## When to use this skill
@@ -13,20 +13,21 @@ read-only and recommends actions only; it never changes anything.
 For cost *spikes* and their cause use `finops-cost-anomaly-detection`; for owner/team showback use
 `finops-cost-allocation`; for VM/idle rightsizing use `finops-rightsizing-advisor`.
 
-## Why this skill exists (AI resource taxonomy)
+## Why this skill exists (AI billing taxonomy)
 
-Azure AI spend is easy to **under-count**. Classic **Azure OpenAI** accounts are
-`Microsoft.CognitiveServices/accounts` with `kind=OpenAI`; **Azure AI Foundry** (the unified
-resource, formerly AI Services) is the **same** resource type with `kind=AIServices`. An OpenAI
-model deployed **inside** a Foundry account bills under `Microsoft.CognitiveServices` with the same
-token meter names but the account `kind` is `AIServices`. So filtering on `kind==OpenAI` or a meter
-category literally named "Azure OpenAI" **drops Foundry-hosted model spend**.
+Azure AI spend is easy to **under-count** if the report selects resources only by provider
+namespace. Classic **Azure OpenAI** and **Azure AI Foundry** model costs often bill under
+`Microsoft.CognitiveServices`, but Foundry Tools can use other resource namespaces. For example,
+Azure SRE Agent resources are `Microsoft.App/agents` and bill as ServiceName/MeterCategory
+**Foundry Tools**, with a meter such as **SRE Agent Unit**. Foundry agent tool charges can also
+appear under Foundry Tools, while model-token charges remain in their model billing service.
 
-This skill therefore keys off **`consumedService`** (both kinds roll up under
-`Microsoft.CognitiveServices`; with `query_costs` it is the resource type's provider namespace) and
-never gates on kind, and it also includes
-**`Microsoft.MachineLearningServices`** so Foundry hub compute / managed endpoints / fine-tuning
-aren't dropped. See the pack README's "AI resource taxonomy" note.
+The discovery query uses both **`ResourceType`** and **`ServiceName`**. It includes the
+`Microsoft.CognitiveServices` and `Microsoft.MachineLearningServices` namespaces, plus any
+resource type associated with recognized AI billing services (including **Foundry Tools**).
+The detail query retains ServiceName and MeterCategory, so the classifier can include Foundry and
+SRE Agent costs even when `consumedService` is a different provider namespace. It never gates on
+resource `kind`.
 
 ## Required access
 
@@ -70,49 +71,63 @@ Use two small `query_costs` shapes over the trailing 30 days (inclusive UTC date
 planned, dispatched via `batch_cost_queries` from `cost_query` with section 4's bounded parallel
 execution and throttling backoff, split on truncation, and prepared separately:
 
-1. **Find the AI resource types.** Totals grouped by `ResourceType`:
+1. **Find the AI resource types.** Totals grouped by `ResourceType,ServiceName`:
 
    ```python
-   from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query, sum_cost_by
+   from cost_query import plan_cost_queries, prepare_cost_query, split_cost_query
    from attribute import ai_resource_types
 
    type_queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
-                                    start=START, end=END, as_of=TODAY, group_by="ResourceType")
-   types = prepare_cost_query(type_results, managed_resources,
-                              management_group_expansions=mg_descendants, window=(START, END))
-   ai_types = ai_resource_types(sum_cost_by(types["included_rows"], "resourceType")[0])
+                                    start=START, end=END, as_of=TODAY,
+                                    group_by="ResourceType,ServiceName")
+   discovery = prepare_cost_query(type_results, managed_resources,
+                                  management_group_expansions=mg_descendants, window=(START, END))
+   ai_types = ai_resource_types(discovery["included_rows"])
    ```
 
    `ai_resource_types` keeps every `Microsoft.CognitiveServices/*` and
-   `Microsoft.MachineLearningServices/*` type exactly as Cost Management spells it. Do **not** filter
-   on `kind` or on a meter category — that is the whole point (Foundry `AIServices` accounts would be
-   dropped). If `ai_types` is empty, there is no AI spend: skip to Step 4.
+   `Microsoft.MachineLearningServices/*` type and resource types associated with recognized AI
+   ServiceNames, including `Microsoft.App/agents` when billed as Foundry Tools. It returns resource
+   type spellings exactly as Cost Management provides them. Do **not** filter on `kind`. If `ai_types`
+   is empty, there is no matching AI billing service in the checked scope: skip to Step 4.
 
 2. **Pull AI meter lines.** Totals for only those types, with the fields the classifier needs:
 
    ```python
    ai_queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
                                   start=START, end=END, as_of=TODAY,
-                                  group_by="ResourceId,ResourceType,MeterCategory,MeterSubCategory,Meter",
+                                  group_by="ResourceId,ResourceType,ServiceName,MeterCategory,MeterSubCategory,Meter",
                                   filter_dimension="ResourceType", filter_values=ai_types)
    prepared = prepare_cost_query(ai_results, managed_resources,
                                  management_group_expansions=mg_descendants, window=(START, END))
    ai_line_items = prepared["included_rows"]
    ```
 
-   Each row carries `cost`, `resourceId`, `meterCategory`, `meterSubCategory`, `meterName`, and
+   Each row carries `cost`, `resourceId`, `serviceName`, `meterCategory`, `meterSubCategory`, `meterName`, and
    `consumedService` (the resource type's provider namespace), which is the shape `attribute.py`
    expects. Classify only `included_rows`; use the returned coverage/partial fields directly; do not
    merge, de-duplicate, or scope-filter rows in model reasoning.
 
 **Fallback (only when `finops-managed-scope` section 4 requires it):** follow the canonical
-Consumption UsageDetails transport contract in `finops-managed-scope` section 5 with this projection,
-keep rows whose `consumedService` is `Microsoft.CognitiveServices` or
-`Microsoft.MachineLearningServices` (case-insensitive), and pass the page envelopes through
-`prepare_usage_details(...)`:
+Consumption UsageDetails transport contract in `finops-managed-scope` section 5 with this projection.
+Pass the page envelopes through `prepare_usage_details(...)` first to enforce scope, completeness
+and de-duplication, then retain only its included rows for which `is_ai_cost_item(row)` is true.
+This keeps `Microsoft.CognitiveServices` and `Microsoft.MachineLearningServices` rows, plus rows
+whose `serviceName` or `meterCategory` is a recognized AI billing label (case-insensitive),
+including Foundry Tools:
 
 ```
---query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, consumedService: properties.consumedService, meterCategory: properties.meterCategory, meterSubCategory: properties.meterSubCategory, meterName: properties.meterName, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId}, nextLink: nextLink}"
+--query "{value: value[].{id: id, date: properties.date, cost: properties.costInUSD, consumedService: properties.consumedService, serviceName: properties.serviceName, meterCategory: properties.meterCategory, meterSubCategory: properties.meterSubCategory, meterName: properties.meterName, subscriptionId: properties.subscriptionId, resourceGroup: properties.resourceGroup, resourceId: properties.instanceName || properties.resourceId}, nextLink: nextLink}"
+```
+
+For the fallback, use the bundled helper after scope preparation rather than reimplementing the
+service-name and meter-category checks:
+
+```python
+from attribute import is_ai_cost_item
+ai_line_items = [
+    row for row in usage_prepared["included_rows"] if is_ai_cost_item(row)
+]
 ```
 
 ### Step 2 (optional) — Pull resource `kind` (Resource Graph)
@@ -148,7 +163,7 @@ read_skill_file(skill_name="finops-for-ai", file_path="attribute.py")
 ```python
 from attribute import attribute_ai_costs
 result = attribute_ai_costs(
-    line_items=ai_line_items,      # from Step 1 (already filtered to the AI families)
+    line_items=ai_line_items,      # from Step 1 (already filtered to AI billing families)
     resource_kinds=resource_kinds, # optional, from Step 2 ({resourceId: kind})
 )
 ```
@@ -156,9 +171,12 @@ result = attribute_ai_costs(
 `attribute_ai_costs` returns:
 
 - **total_ai_usd**, **resource_count**, **model_count**, **as_of** (latest line-item date).
-- **by_service_family** — Cognitive Services / OpenAI vs Machine Learning, ranked.
+- **by_service_family** — Cognitive Services / OpenAI, Foundry Models, Foundry Tools, Machine
+  Learning, and other supported AI billing families, ranked.
 - **by_meter_type** — `model_token` (LLM/embedding tokens), `compute` (managed endpoints / training),
-  `other_cognitive` (Speech/Vision/Language transactions) — the key "what kind of AI spend" split.
+  `agent_service` (Foundry Tools and agent units), and `other_cognitive` (other AI transactions).
+  Agent-service costs contribute to total AI spend but never to model-token rankings or token
+  optimization hints.
 - **by_resource** — per account/workspace, with `kind` (if provided), `service_family`, and its
   `top_model`.
 - **by_model** — per model (model_token lines only), with `resource_count`.
@@ -169,7 +187,8 @@ result = attribute_ai_costs(
 
 ### Step 4 — Report
 
-Produce: a **headline** (total AI spend, # resources, # models, the model-token vs compute split); a
+Produce: a **headline** (total AI spend, # resources, # models, the model-token vs compute vs
+agent-service split); a
 **by-model** table and a **by-resource** table (with kind + top model); the **top cost drivers**; and
 the **hints** as a "where to look" list. Never sum model-token and compute dollars into a single
 "savings" number — they are different cost drivers. Label PTU/commitment and compute-no-tokens hints

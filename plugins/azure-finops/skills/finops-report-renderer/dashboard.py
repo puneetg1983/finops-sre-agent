@@ -26,7 +26,7 @@ TABS = (
     ("rightsizing", "Rightsizing & waste", "Utilization-backed, review-before-action opportunities."),
     ("commitments", "Commitments", "Reservation and savings-plan coverage, utilization and expiry."),
     ("containers", "Containers", "Cluster, namespace and workload costs, idle and shared cost."),
-    ("ai", "AI spend", "AI services, models, tokens and compute attribution."),
+    ("ai", "AI spend", "AI services, models, agent units, tokens and compute attribution."),
     ("unit-economics", "Unit economics", "Cloud cost per business outcome; not total company profitability."),
     ("sustainability", "Sustainability", "Sourced emissions and energy, with methodology."),
     ("planning", "Planning & scenarios", "Explicit workload, rate and commitment assumptions."),

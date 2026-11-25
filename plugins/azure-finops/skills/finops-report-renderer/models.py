@@ -1162,6 +1162,7 @@ def build_ai_spend_model(
     meter_rows = []
     token_spend = Decimal(0)
     compute_spend = Decimal(0)
+    agent_service_spend = Decimal(0)
     for index, row in enumerate(
         _objects(result.get("by_meter_type"), "result.by_meter_type")
     ):
@@ -1173,6 +1174,8 @@ def build_ai_spend_model(
             token_spend += cost
         elif meter_type == "compute":
             compute_spend += cost
+        elif meter_type == "agent_service":
+            agent_service_spend += cost
         meter_rows.append((meter_type, cost, pct))
     meter_rows.sort(
         key=lambda row: (-row[1], row[0].casefold(), row[0], _decimal_key(row[2]))
@@ -1296,7 +1299,7 @@ def build_ai_spend_model(
     )
     return _model(
         "FinOps: AI Spend",
-        "Weekly Azure OpenAI, Foundry, Cognitive Services, and Machine Learning cost snapshot.",
+        "Azure AI model, agent-service, Cognitive Services, and Machine Learning cost snapshot.",
         context,
         [
             {"label": "Total AI spend", "value": _money(total), "detail": "Monthly ActualCost"},
@@ -1304,6 +1307,7 @@ def build_ai_spend_model(
             {"label": "Models", "value": str(model_count), "detail": "Token-meter models"},
             {"label": "Model-token spend", "value": _money(token_spend), "detail": "Kept separate from compute"},
             {"label": "Compute spend", "value": _money(compute_spend), "detail": "Endpoints, training, and compute"},
+            {"label": "Agent service spend", "value": _money(agent_service_spend), "detail": "Foundry Tools and agent units"},
         ],
         {
             "type": "bar",
