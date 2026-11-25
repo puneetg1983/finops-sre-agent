@@ -526,6 +526,52 @@ def test_wide_dashboard_tables_have_accessible_scroll_regions():
     assert '<th scope="col">Dimension</th>' in output
 
 
+def test_resource_ids_are_split_in_allocation_anomalies_containers_and_sustainability():
+    resource_id = SCOPE + "/providers/Microsoft.Compute/virtualMachines/vm"
+    cluster_id = SCOPE + "/providers/Microsoft.ContainerService/managedClusters/aks"
+    sources = {
+        "allocation": envelope({
+            "dimension": "team", "allocated_usd": 0, "unallocated_usd": 3,
+            "untagged_resources": [{"resourceId": resource_id, "monthly_usd": 3}],
+        }),
+        "anomalies": envelope([
+            {"dimension": "resourceId", "value": resource_id, "current_usd": 3,
+             "baseline_mean_usd": 1, "kind": "spike"},
+            {"dimension": "service", "value": "Storage", "current_usd": 2,
+             "baseline_mean_usd": 1, "kind": "spike"},
+        ]),
+        "containers": envelope([{
+            "cluster": cluster_id, "namespace": "payments", "workload": "api",
+            "cost_usd": 3, "idle_usd": 0, "shared_usd": 0, "allocation_method": "metered",
+        }]),
+        "sustainability": envelope([
+            {"scope": resource_id, "mtco2e": 1, "methodology": "provider estimate"},
+            {"scope": SCOPE, "mtco2e": 2, "methodology": "provider estimate"},
+        ]),
+    }
+    model = build(sources)
+
+    for tab_id, title, expected_id in [
+        ("allocation", "Untagged resources", resource_id),
+        ("anomalies", "Detected anomalies", resource_id),
+        ("containers", "Kubernetes allocation", cluster_id),
+        ("sustainability", "Environmental impact", resource_id),
+    ]:
+        section = next(item for item in tab(model, tab_id)["sections"] if item["title"] == title)
+        root = ET.fromstring(renderer._sections({"sections": [section]}, heading_level=3))
+        headings = [cell.text for cell in root.findall(".//thead/tr/th")]
+        assert "Subscription ID" in headings
+        assert "Resource group" in headings
+        assert "Resource type" in headings
+        assert expected_id in [item.text for item in root.findall(".//details/span/code")]
+        assert expected_id not in [item.text for item in root.findall(".//tbody/tr/td")]
+        if tab_id == "anomalies":
+            assert "Name / Driver" in headings
+            assert any(cell.text == "Storage" for cell in root.findall(".//tbody/tr/td"))
+        if tab_id == "sustainability":
+            assert any(cell.text == SCOPE for cell in root.findall(".//tbody/tr/td"))
+
+
 def test_explorer_breakdowns_keep_short_names_full_details_and_signed_cents():
     rows = [
         {"resourceId": SCOPE + "/providers/Microsoft.Web/sites/very-long-portal-name",

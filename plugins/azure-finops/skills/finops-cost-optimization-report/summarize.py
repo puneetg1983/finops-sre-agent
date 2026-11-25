@@ -138,6 +138,7 @@ def _priorities(rightsizing, anomalies, budget_roll, governance):
             "detail": f.get("kind"),
             "action": f.get("recommendedAction"),
             "validated": f.get("validated"),
+            "resourceId": f.get("resourceId"),
         })
 
     for b in budget_roll["over"] + budget_roll["forecast_over"]:
@@ -153,15 +154,20 @@ def _priorities(rightsizing, anomalies, budget_roll, governance):
         })
 
     for a in anomalies["top"]:
-        items.append({
+        resource_id = a.get("value") if str(a.get("dimension")).casefold() == "resourceid" else None
+        value = _short_id(resource_id) if isinstance(resource_id, str) and resource_id.startswith("/") else a.get("value")
+        item = {
             "category": "anomaly",
             "impact_type": "spike",
             "impact_usd": _num(a.get("impact_usd")),
-            "title": f"{a.get('kind') or 'spike'}: {a.get('dimension')}={a.get('value')}",
+            "title": f"{a.get('kind') or 'spike'}: {a.get('dimension')}={value}",
             "detail": f"current {a.get('current_usd')} vs baseline {a.get('baseline_mean_usd')}",
             "action": "Investigate the spike and correlate to a change",
             "validated": None,
-        })
+        }
+        if str(a.get("dimension")).casefold() == "resourceid":
+            item["resourceId"] = resource_id
+        items.append(item)
 
     if governance["untagged_usd"] > 0:
         items.append({
@@ -210,7 +216,8 @@ def summarize_optimization(*, anomalies=None, rightsizing=None, allocation=None,
         "headline": {total_monthly_spend, potential_monthly_savings, anomaly_count,
                      top_anomaly_impact_usd, budgets_over, budgets_forecast_over,
                      budgets_at_risk, untagged_usd, unallocated_pct},
-        "priorities": [ {rank, category, impact_type, impact_usd, title, detail, action, validated} ],
+        "priorities": [ {rank, category, impact_type, impact_usd, title, detail, action, validated,
+                         resourceId (for resource-specific findings)} ],
         "rightsizing": {potential_monthly_savings, count, top:[...]},
         "anomalies": {count, top_impact_usd, top:[...]},
         "budgets": {no_budgets, summary, over:[...], forecast_over:[...], at_risk:[...]},

@@ -829,6 +829,10 @@ def build_cost_optimization_model(
         prefix = f"result.priorities[{index}]"
         rank = _integer(row.get("rank"), f"{prefix}.rank", default=index + 1)
         impact = _decimal(row.get("impact_usd"), f"{prefix}.impact_usd", optional=True)
+        resource_id = _text(row.get("resourceId"), f"{prefix}.resourceId")
+        title = _text(row.get("title"), f"{prefix}.title")
+        if resource_id and title.endswith(resource_id):
+            title = title[:-len(resource_id)] + _short_resource(resource_id)
         priorities.append(
             {
                 "rank": rank,
@@ -837,7 +841,9 @@ def build_cost_optimization_model(
                     row.get("impact_type"), f"{prefix}.impact_type"
                 ),
                 "impact": impact,
-                "title": _text(row.get("title"), f"{prefix}.title"),
+                "title": title,
+                "resource_id": resource_id,
+                "resource_applicable": "resourceId" in row or row.get("category") == "rightsizing",
                 "detail": _text(row.get("detail"), f"{prefix}.detail"),
                 "action": _text(row.get("action"), f"{prefix}.action"),
                 "validation": _validated(
@@ -854,6 +860,9 @@ def build_cost_optimization_model(
             row["category"],
             row["title"].casefold(),
             row["title"],
+            row["resource_id"].casefold(),
+            row["resource_id"],
+            row["resource_applicable"],
             row["impact_type"].casefold(),
             row["impact_type"],
             _decimal_key(row["impact"]),
@@ -1043,6 +1052,10 @@ def build_cost_optimization_model(
     untagged = _decimal(
         headline.get("untagged_usd"), "result.headline.untagged_usd"
     )
+    priorities_have_resource_ids = any(
+        row["resource_id"].startswith("/") and "/providers/" in row["resource_id"].casefold()
+        for row in priorities
+    )
 
     return _model(
         "FinOps: Cost Optimization",
@@ -1081,6 +1094,7 @@ def build_cost_optimization_model(
                     "Impact type",
                     "Impact",
                     "Title",
+                    *(["Resource ID"] if priorities_have_resource_ids else []),
                     "Detail",
                     "Action",
                     "Validation",
@@ -1092,6 +1106,8 @@ def build_cost_optimization_model(
                         row["impact_type"],
                         _money(row["impact"]),
                         row["title"],
+                        *([row["resource_id"] or ("(unknown)" if row["resource_applicable"] else "—")]
+                          if priorities_have_resource_ids else []),
                         row["detail"],
                         row["action"],
                         row["validation"],

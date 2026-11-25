@@ -87,6 +87,33 @@ def test_anomaly_rollup_count_and_top_impact():
     assert out["headline"]["top_anomaly_impact_usd"] == 500.0
 
 
+def test_resource_anomaly_priority_keeps_id_without_putting_it_in_the_title():
+    resource_id = "/subscriptions/sub/resourceGroups/prod/providers/Microsoft.App/agents/ops"
+    anomalies = [_anomaly("resourceId", resource_id, 500.0),
+                 _anomaly("service", "Storage", 200.0)]
+
+    out = summarize_optimization(anomalies=anomalies, as_of=AS_OF)
+
+    assert out["priorities"][0]["title"] == "spike: resourceId=ops"
+    assert out["priorities"][0]["resourceId"] == resource_id
+    assert out["anomalies"]["top"][0]["value"] == resource_id
+    assert out["priorities"][1]["title"] == "spike: service=Storage"
+    assert "resourceId" not in out["priorities"][1]
+
+
+def test_resource_priorities_retain_ids_and_distinguish_missing_ids():
+    resource_id = "/subscriptions/sub/resourceGroups/prod/providers/Microsoft.App/agents/ops"
+    out = summarize_optimization(
+        rightsizing=[_finding(resource_id, 300.0), _finding(None, 100.0)],
+        anomalies=[_anomaly("resourceId", None, 200.0)],
+        as_of=AS_OF,
+    )
+
+    assert out["priorities"][0]["resourceId"] == resource_id
+    assert out["priorities"][1]["resourceId"] is None
+    assert out["priorities"][2]["resourceId"] is None
+
+
 def test_budget_buckets_and_overrun_math():
     budgets = _budgets_result([
         _budget("over", 1000.0, 1200.0, 1300.0, "over_budget"),

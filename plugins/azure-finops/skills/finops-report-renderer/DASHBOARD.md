@@ -131,9 +131,13 @@ deduplicate recommendations or claim that overlapping savings can all be realize
 Without JavaScript, the complete table and initial breakdowns remain available. Print includes
 all resource rows regardless of interactive filters.
 
-AI spend's resource table separates subscription ID, resource group, resource type and name.
-Expand a name for the full resource ID; it remains searchable. Missing identity components
-are shown as `(unknown)` rather than inferred from the billed service.
+Resource IDs in tables are separated into subscription ID, resource group, resource type and
+name, including allocation, anomalies, optimization and reliability. Expand a name for the
+full resource ID; it remains searchable. Missing identity components are shown as `(unknown)`
+rather than inferred from the billed service. Tables that mix resources with other values keep
+those values in a labeled name/value column; subscription and resource-group scopes remain
+scopes, not resources. Cost explorer and the rightsizing browser retain their compact details
+panels, filters and full-ID CSV export.
 
 Resource lists default to the **top 10 matching records**, with 25 and 50 available.
 Cost and savings ranking uses the displayed signed amount, with unquantified savings last.

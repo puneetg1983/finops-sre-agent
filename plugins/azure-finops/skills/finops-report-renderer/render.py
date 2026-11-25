@@ -866,6 +866,113 @@ def _metrics(model):
     return '<div class="metrics">' + "".join(rendered) + "</div>"
 
 
+def _is_resource_id(value, explicit=False):
+    if not isinstance(value, str) or not value.strip().startswith("/"):
+        return False
+    parts = value.strip().strip("/").split("/")
+    if parts[0].casefold() == "providers":
+        return explicit and len(parts) > 2
+    return parts[0].casefold() == "subscriptions" and any(
+        index > 0 and index % 2 == 0 and part.casefold() == "providers"
+        for index, part in enumerate(parts)
+    )
+
+
+def _identity_table(columns, rows, title):
+    """Split resource ID cells without changing the source rows or resource browsers."""
+    candidates = [
+        index for index, column in enumerate(columns)
+        if any(_is_resource_id(row[index], column.casefold() in {"resource", "resource id"})
+               for row in rows)
+    ]
+    if not candidates:
+        return columns, rows, {}
+
+    claimed, blocks = set(), {}
+    for identity in candidates:
+        label = columns[identity].casefold()
+        companions = {}
+
+        def claim(key, column):
+            matches = [
+                index for index, name in enumerate(columns)
+                if name.casefold() == column and index not in candidates and index not in claimed
+            ]
+            if len(matches) == 1:
+                companions[key] = matches[0]
+                claimed.add(matches[0])
+
+        if label == "resource id":
+            claim("name", "resource")
+            if "name" not in companions:
+                claim("name", "name")
+        if label in {"resource", "resource id"}:
+            claim("group", "resource group")
+            claim("type", "resource type")
+            if title == "Ranked savings opportunities" and "type" not in companions:
+                claim("type", "type")
+        selected = {identity, *companions.values()}
+        claimed.update(selected)
+        blocks[min(selected)] = (identity, companions)
+
+    result_columns = []
+    result_rows = [[] for _ in rows]
+    disclosures = {}
+    for index, column in enumerate(columns):
+        if index in blocks:
+            identity, companions = blocks[index]
+            label = columns[identity]
+            explicit = label.casefold() in {"resource", "resource id"}
+            mixed = not explicit and any(
+                row[identity] not in ("", None)
+                and not _is_resource_id(row[identity])
+                for row in rows
+            )
+            name_label = f"Name / {label}" if mixed else "Name"
+            headings = ["Subscription ID", "Resource group", "Resource type", name_label]
+            if len(candidates) > 1:
+                headings = [f"{label} - {heading}" for heading in headings]
+            name_index = len(result_columns) + 3
+            result_columns.extend(headings)
+            disclosures[name_index] = []
+            for output, row in zip(result_rows, rows):
+                raw = row[identity]
+                is_id = _is_resource_id(raw, explicit)
+                if explicit and raw == "—" and not companions:
+                    subscription = group = resource_type = name = "—"
+                    full_id = ""
+                elif is_id or explicit:
+                    subscription, group, resource_type, name = _models._resource_identity_parts(
+                        str(raw or "").strip()
+                    )
+                    if not is_id and raw:
+                        name = str(raw)
+                    for key in ("name", "group", "type"):
+                        value = row[companions[key]] if key in companions else None
+                        if value not in (None, "", "(unknown)"):
+                            if key == "name":
+                                name = value
+                            elif key == "group":
+                                group = value
+                            else:
+                                resource_type = value
+                    full_id = (
+                        str(raw) if raw not in (None, "", "(unknown)")
+                        and (is_id or label.casefold() == "resource id") else ""
+                    )
+                else:
+                    subscription = group = resource_type = "—"
+                    name = raw if raw not in (None, "") else "—"
+                    full_id = ""
+                output.extend([subscription, group, resource_type, name])
+                disclosures[name_index].append(full_id)
+        elif index not in claimed:
+            result_columns.append(column)
+            for output, row in zip(result_rows, rows):
+                output.append(row[index])
+    return result_columns, result_rows, disclosures
+
+
 def _sections(model, heading_level=2, id_prefix="section"):
     rendered = []
     for index, section in enumerate(_list(model.get("sections"), "sections")):
@@ -880,32 +987,20 @@ def _sections(model, heading_level=2, id_prefix="section"):
             raise ValueError(f"sections[{index}].columns is required when rows exist")
 
         resource_ids = section.get("resourceIds")
-        name_column = None
+        disclosures = {}
         if resource_ids is not None:
             resource_ids = _list(resource_ids, f"sections[{index}].resourceIds")
             if len(resource_ids) != len(rows) or not all(isinstance(item, str) for item in resource_ids):
                 raise ValueError(f"sections[{index}].resourceIds must contain one text ID per row")
             if columns.count("Name") != 1:
                 raise ValueError(f"sections[{index}].resourceIds requires one Name column")
-            name_column = columns.index("Name")
+            disclosures[columns.index("Name")] = resource_ids
 
-        body = []
         for row_index, row in enumerate(rows):
             if not isinstance(row, list) or len(row) != len(columns):
                 raise ValueError(
                     f"sections[{index}].rows[{row_index}] must match columns"
                 )
-            cells = []
-            for column_index, cell in enumerate(row):
-                value = _escape(cell)
-                if name_column == column_index and resource_ids[row_index]:
-                    value = (
-                        f'<details class="resource-identity"><summary>{value}</summary>'
-                        '<span class="resource-context">Full resource ID: '
-                        f'<code>{_escape(resource_ids[row_index])}</code></span></details>'
-                    )
-                cells.append(f"<td>{value}</td>")
-            body.append("<tr>" + "".join(cells) + "</tr>")
 
         if section.get("breakdown") and heading_level > 2:
             rendered.append(_resource_browser(section, f"{id_prefix}-{index}"))
@@ -913,13 +1008,37 @@ def _sections(model, heading_level=2, id_prefix="section"):
         if section.get("visualization") == "service-bars" and heading_level > 2 and rows:
             rendered.append(_service_bars(section))
             continue
+        if resource_ids is None:
+            columns, rows, disclosures = _identity_table(columns, rows, title)
+
+        body = []
+        text_columns = {"action", "detail", "evidence", "methodology", "recommended action", "title"}
+        for row_index, row in enumerate(rows):
+            cells = []
+            for column_index, cell in enumerate(row):
+                value = _escape(cell)
+                ids = disclosures.get(column_index)
+                full_id = ids[row_index] if ids is not None else ""
+                if full_id:
+                    value = (
+                        f'<details class="resource-identity"><summary>{value}</summary>'
+                        '<span class="resource-context">Full resource ID: '
+                        f'<code>{_escape(full_id)}</code></span></details>'
+                    )
+                text_class = (
+                    ' class="resource-table-text"'
+                    if disclosures and columns[column_index].casefold() in text_columns else ""
+                )
+                cells.append(f"<td{text_class}>{value}</td>")
+            body.append("<tr>" + "".join(cells) + "</tr>")
+
         if body:
             dashboard_table = heading_level > 2
             table_hint = (
                 '<p class="table-hint">Scroll horizontally to view more columns.</p>'
                 if dashboard_table and len(columns) > 2 else ""
             )
-            table_class = "table-wrap resource-identity-table" if resource_ids is not None else "table-wrap"
+            table_class = "table-wrap resource-identity-table" if disclosures else "table-wrap"
             table_wrap = (
                 f'<div class="{table_class}" role="region" tabindex="0" aria-label="{_escape(title)} table">'
                 if dashboard_table else f'<div class="{table_class}">'

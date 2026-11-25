@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -657,6 +658,149 @@ def test_ai_resource_details_follow_cost_sorted_rows():
     assert section["resourceIds"][1] == first["resourceId"]
 
 
+def _rendered_table(section):
+    markup = renderer._sections({"sections": [section]}, heading_level=3)
+    root = ET.fromstring(markup)
+    headings = [cell.text for cell in root.findall(".//thead/tr/th")]
+    rows = [row.findall("td") for row in root.findall(".//tbody/tr")]
+    return markup, headings, rows
+
+
+def test_resource_tables_split_nested_and_partial_ids_without_losing_details():
+    nested = f"{SCOPE}/providers/Microsoft.Sql/servers/sql/databases/db"
+    extension = (
+        f"{SCOPE}/providers/Microsoft.Compute/virtualMachines/vm/providers/"
+        "Microsoft.Insights/diagnosticSettings/logs"
+    )
+    incomplete = f"{SCOPE}/providers/Microsoft.Compute/virtualMachines"
+    section = {
+        "title": "Resources",
+        "columns": ["Resource", "Cost"],
+        "rows": [[nested, "$3.00"], [extension, "$2.00"], [incomplete, "$1.00"]],
+    }
+    original = copy.deepcopy(section)
+
+    _, headings, rows = _rendered_table(section)
+    assert headings == ["Subscription ID", "Resource group", "Resource type", "Name", "Cost"]
+    assert [[cell.text for cell in row[:3]] for row in rows] == [
+        ["sub", "managed", "Microsoft.Sql/servers/databases"],
+        ["sub", "managed", "Microsoft.Insights/diagnosticSettings"],
+        ["sub", "managed", "(unknown)"],
+    ]
+    assert [row[3].find("details/summary").text for row in rows] == ["db", "logs", "(unknown)"]
+    assert [row[3].find("details/span/code").text for row in rows] == [nested, extension, incomplete]
+    assert [row[4].text for row in rows] == ["$3.00", "$2.00", "$1.00"]
+    assert section == original
+
+
+def test_mixed_resource_and_nonresource_values_preserve_scopes_and_labels():
+    resource_id = f"{SCOPE}/providers/Microsoft.App/agents/assistant"
+    section = {
+        "title": "Detected anomalies",
+        "columns": ["Dimension", "Driver", "Current"],
+        "rows": [
+            ["resourceId", resource_id, "$9.00"],
+            ["service", "Storage", "$2.00"],
+            ["resourceGroup", SCOPE, "$1.00"],
+        ],
+    }
+    _, headings, rows = _rendered_table(section)
+
+    assert headings == [
+        "Dimension", "Subscription ID", "Resource group", "Resource type", "Name / Driver", "Current",
+    ]
+    assert [cell.text for cell in rows[0][1:4]] == ["sub", "managed", "Microsoft.App/agents"]
+    assert rows[0][4].find("details/summary").text == "assistant"
+    assert rows[0][4].find("details/span/code").text == resource_id
+    assert [cell.text for cell in rows[1][1:5]] == ["—", "—", "—", "Storage"]
+    assert [cell.text for cell in rows[2][1:5]] == ["—", "—", "—", SCOPE]
+
+
+def test_multiple_resource_columns_keep_their_own_ids_and_escape_untrusted_names():
+    observed = f"{SCOPE}/providers/Microsoft.App/agents/observed"
+    target = f'{SCOPE}/providers/Microsoft.App/agents/<img onerror="x">'
+    section = {
+        "title": "Accountability",
+        "columns": ["Control", "Observed", "Target"],
+        "rows": [["Review", observed, target]],
+    }
+    markup, headings, rows = _rendered_table(section)
+
+    assert headings == [
+        "Control",
+        "Observed - Subscription ID", "Observed - Resource group", "Observed - Resource type", "Observed - Name",
+        "Target - Subscription ID", "Target - Resource group", "Target - Resource type", "Target - Name",
+    ]
+    assert rows[0][4].find("details/span/code").text == observed
+    assert rows[0][8].find("details/summary").text == '<img onerror="x">'
+    assert rows[0][8].find("details/span/code").text == target
+    assert '<img onerror="x">' not in markup
+
+
+def test_missing_resource_id_keeps_supplied_name_and_group_without_fabricating_details():
+    resource_id = f"{SCOPE}/providers/Microsoft.Web/sites/known"
+    section = {
+        "title": "Resources",
+        "columns": ["Resource", "Resource ID", "Resource group", "Score"],
+        "rows": [["known", resource_id, "managed", "2"], ["orphan", "", "other", "1"]],
+    }
+
+    _, headings, rows = _rendered_table(section)
+    assert headings == ["Subscription ID", "Resource group", "Resource type", "Name", "Score"]
+    assert [cell.text for cell in rows[1][:4]] == ["(unknown)", "other", "(unknown)", "orphan"]
+    assert rows[1][3].find("details") is None
+
+
+def test_reliability_tables_merge_existing_name_and_group_with_full_id():
+    model = models.build_cost_vs_reliability_model(_reliability(), **_context())
+    for title in ("Spend and pain", "Unmatched reliability signals"):
+        section = next(item for item in model["sections"] if item["title"] == title)
+        _, headings, rows = _rendered_table(section)
+        assert headings[:4] == ["Subscription ID", "Resource group", "Resource type", "Name"]
+        assert "Resource ID" not in headings
+        assert rows[0][0].text == "sub"
+        assert rows[0][1].text == "managed"
+        assert rows[0][3].find("details/span/code").text == section["rows"][0][1]
+    assert rows[0][3].find("details/summary").text == "missing"
+
+
+def test_optimization_tables_split_ids_and_preserve_nonresource_targets():
+    result = _optimization()
+    resource_id = f"{SCOPE}/providers/Microsoft.Compute/virtualMachines/vm-b"
+    result["governance"]["untagged_top"] = [{"resourceId": resource_id, "monthly_usd": 40}]
+    result["anomalies"]["top"].append({
+        "kind": "spike", "dimension": "resourceId", "value": resource_id,
+        "current_usd": 5, "baseline_mean_usd": 1, "impact_usd": 4,
+    })
+    result["priorities"].append({
+        "rank": 3, "category": "anomaly", "impact_type": "spike", "impact_usd": 4,
+        "title": f"spike: resourceId={resource_id}", "resourceId": resource_id,
+        "detail": "current 5 vs baseline 1", "action": "Investigate",
+    })
+    model = models.build_cost_optimization_model(result, **_context())
+
+    for title in ("Top priorities", "Rightsizing", "Cost anomalies", "Governance and policy"):
+        section = next(item for item in model["sections"] if item["title"] == title)
+        markup, headings, rows = _rendered_table(section)
+        assert "Subscription ID" in headings
+        assert "Resource group" in headings
+        assert "Resource type" in headings
+        assert resource_id in [
+            code.text for row in rows for cell in row for code in cell.findall(".//details/span/code")
+        ]
+        assert resource_id not in [cell.text for row in rows for cell in row]
+        if title == "Top priorities":
+            assert "spike: resourceId=vm-b" in markup
+            budget = next(row for row in rows if row[1].text == "budget")
+            budget_identity = headings.index("Subscription ID")
+            assert [cell.text for cell in budget[budget_identity:budget_identity + 4]] == ["—"] * 4
+            rightsizing = next(row for row in rows if row[1].text == "rightsizing")
+            assert [cell.text for cell in rightsizing[budget_identity:budget_identity + 4]] == ["(unknown)"] * 4
+        if title == "Governance and policy":
+            assert "Name / Target" in headings
+            assert any(cell.text == "prod" for row in rows for cell in row)
+
+
 def test_cost_vs_reliability_adapter_preserves_quality_and_signal_fields():
     model = models.build_cost_vs_reliability_model(_reliability(), **_context())
 
@@ -759,7 +903,7 @@ def test_all_adapters_render_empty_states(builder, empty):
             models.build_rightsizing_savings_model,
             _rightsizing,
             "582d55595fb372e18e87690e04380614a2ba67cc84a3535f0441674e5095801f",
-            "29712531fa06b2b573ce5a2d523ea9571d204c758f1ffceddfbfad31525f2616",
+            "464d655cde197da0dc22c38d8b87b62cbae7f41e974cf26f4c2cbc9e566682bf",
         ),
         (
             models.build_budget_status_model,
@@ -771,7 +915,7 @@ def test_all_adapters_render_empty_states(builder, empty):
             models.build_cost_optimization_model,
             _optimization,
             "b042471933ac40875fa4f538021bd9bf9ab111e4908d53ee06047e53ecdd3146",
-            "9c8b85d3068349ecd16fa92a8499d4ccfc383a899db1d60a24f8a7384e2f1f91",
+            "be71a1bf617cd08f40731a6385630c76ea59562a11bc7b1dcc54b920684eb29f",
         ),
         (
             models.build_ai_spend_model,
@@ -783,7 +927,7 @@ def test_all_adapters_render_empty_states(builder, empty):
             models.build_cost_vs_reliability_model,
             _reliability,
             "82f4594649f737f150f756ed662a1f062fc19dbeebfeb4be5669d0055bc4725b",
-            "4928480c4304e28cf00141a1c8bc299277e12f10595fd1c5fe539e85c5ba8cae",
+            "a5dd78331957d4d1ec0cbdc80f2ccd784b4b1af10f1cd670fa0b5eea8e5572ab",
         ),
     ],
 )
