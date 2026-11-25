@@ -766,3 +766,13 @@ def test_everything_requires_matching_tenant_and_complete_recursive_hierarchy():
     # Explicit dashboard policy does not weaken the existing scheduled-skill policy.
     decision = scope.decide_scope_policy(["/subscriptions/a"], [SCOPE], mode="scheduled")
     assert decision["allowed"] is False
+
+def test_header_shows_snapshot_age_cost_cutoff_and_installed_plugin_build():
+    setup = load("dashboard_setup", SKILLS / "finops-setup" / "setup.py")
+    output = renderer.render_report(build())
+    revision = setup._plugin_revision()
+    assert 'data-refreshed-at="2026-11-16T22:30:00Z"' in output
+    assert '<time datetime="2026-11-16T22:30:00Z">Nov 16, 2026 · 22:30 UTC</time>' in output
+    assert 'Cost data through <strong class="inline">2026-11-16</strong>' in output
+    assert f"Azure FinOps plugin v{setup._plugin_version()} · build <code>{revision[:7]}</code>" in output
+    assert f'title="Plugin file fingerprint {revision}"' in output

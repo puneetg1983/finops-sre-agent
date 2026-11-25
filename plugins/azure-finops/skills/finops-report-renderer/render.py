@@ -1,10 +1,16 @@
 """Deterministic CSP-compliant static HTML renderer for FinOps reports."""
 
+import functools
+import hashlib
 import html
 import json
 import math
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_STALE_AFTER_HOURS = 36
 
 
 _CSP = """default-src 'none';
@@ -803,6 +809,32 @@ _DASHBOARD_SCRIPT = """
       });
     });
     document.querySelectorAll('.chart-panel, .service-bars, .breakdown-chart').forEach(chart => observer.observe(chart));
+  }
+  const refreshCard = document.querySelector('.refresh-card[data-refreshed-at]');
+  if (refreshCard) {
+    const refreshedMs = Date.parse(refreshCard.dataset.refreshedAt);
+    const staleHours = Number(refreshCard.dataset.staleHours) || 36;
+    const ageLabel = refreshCard.querySelector('[data-refresh-age]');
+    const snapshotLabel = document.querySelector('[data-snapshot-age]');
+    const describeAge = () => {
+      const minutes = Math.floor((Date.now() - refreshedMs) / 60000);
+      if (!Number.isFinite(minutes) || minutes < 0) return;
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+      const age = minutes < 1 ? 'just now' : minutes < 60 ? minutes + ' min ago' :
+        hours < 48 ? hours + (hours === 1 ? ' hour ago' : ' hours ago') : days + ' days ago';
+      const stale = hours >= staleHours;
+      ageLabel.textContent = stale ?
+        'Updated ' + age + ' · older than the daily schedule' :
+        'Updated ' + age + ' · not real-time billing';
+      refreshCard.classList.toggle('is-stale', stale);
+      if (snapshotLabel) {
+        snapshotLabel.textContent = 'Saved ' + age;
+        snapshotLabel.classList.toggle('is-stale', stale);
+      }
+    };
+    describeAge();
+    setInterval(describeAge, 60000);
   }
   select(0, false);
   document.documentElement.classList.add('dashboard-enhanced');
@@ -1642,7 +1674,57 @@ def _dashboard(model, intro=""):
     )
 
 
-def _dashboard_header(title, description, refreshed_at, mode, scopes, warnings=""):
+@functools.lru_cache(maxsize=1)
+def _plugin_build():
+    """Installed plugin version and file fingerprint (same algorithm as finops-setup)."""
+    try:
+        version = json.loads((_PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError):
+        version = None
+    digest = hashlib.sha256()
+    for path in sorted(_PLUGIN_ROOT.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        relative = path.relative_to(_PLUGIN_ROOT).as_posix().encode()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return {"version": str(version or "unknown"), "revision": digest.hexdigest()}
+
+
+def _refresh_card(refreshed_at, window, build):
+    try:
+        moment = datetime.fromisoformat(refreshed_at.replace("Z", "+00:00"))
+    except ValueError:
+        moment = None
+    if moment is not None and moment.tzinfo is not None:
+        utc = moment.astimezone(timezone.utc)
+        iso = utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        shown = f'<time datetime="{iso}">{utc.strftime("%b")} {utc.day}, {utc.year} · {utc.strftime("%H:%M")} UTC</time>'
+        age_attr = f' data-refreshed-at="{iso}" data-stale-hours="{_STALE_AFTER_HOURS}"'
+    else:
+        shown, age_attr = _escape(refreshed_at), ""
+    through = ""
+    if isinstance(window, (list, tuple)) and len(window) == 2 and window[1]:
+        through = f'<small>Cost data through <strong class="inline">{_escape(window[1])}</strong></small>'
+    revision = build.get("revision") or ""
+    build_html = (
+        f'<small class="build-info" title="Plugin file fingerprint {_escape(revision)}">'
+        f'Azure FinOps plugin v{_escape(build.get("version") or "unknown")}'
+        + (f' · build <code>{_escape(revision[:7])}</code>' if revision else "")
+        + '</small>'
+    )
+    return (
+        f'<div class="refresh-card"{age_attr}>{_icon("clock")}<div><span>Last refreshed</span>'
+        f'<strong>{shown}</strong>'
+        '<small class="refresh-age" data-refresh-age>Scheduled snapshot, not real-time billing</small>'
+        f'{through}{build_html}</div></div>'
+    )
+
+
+def _dashboard_header(title, description, refreshed_at, mode, scopes, warnings="", window=None, build=None):
     return (
         '<header class="dashboard-header"><p class="workspace-breadcrumb">'
         'Live Reports <span aria-hidden="true">/</span> Financial operations</p>'
@@ -1651,9 +1733,7 @@ def _dashboard_header(title, description, refreshed_at, mode, scopes, warnings="
         f'<h1>{_escape(title)}</h1><p class="powered-by">{_icon("product-sre-agent")}'
         '<span>Powered by Azure SRE Agent</span></p>'
         f'<p class="subtitle">{_escape(description)}</p></div>'
-        f'<div class="refresh-card">{_icon("clock")}<div><span>Last refreshed</span>'
-        f'<strong>{_escape(refreshed_at)}</strong><small>Scheduled snapshot, not real-time billing</small>'
-        '</div></div></div>'
+        f'{_refresh_card(refreshed_at, window, build or _plugin_build())}</div>'
         f'<div class="context-disclosures"><details class="scope-details"><summary>{_icon("product-subscriptions")}'
         f'<span>Scope: <strong>{_escape(mode)}</strong></span>'
         f'<span class="scope-action">View scopes</span></summary>{scopes}</details>{warnings}</div></header>'
@@ -1721,14 +1801,15 @@ def render_report(model):
         stylesheet += "\n" + Path(__file__).with_name("dashboard.css").read_text(encoding="utf-8")
         sprite = Path(__file__).with_name("fluent-icons.svg").read_text(encoding="utf-8")
         sprite += Path(__file__).with_name("microsoft-product-icons.svg").read_text(encoding="utf-8")
-        intro = _dashboard_header(title, description, refreshed_at, mode, scope_html, warning_html)
+        intro = _dashboard_header(title, description, refreshed_at, mode, scope_html, warning_html,
+                                  window=model.get("window"), build=model.get("build"))
         header_html = (
             '<div class="appbar"><div class="appbar-brand">'
             f'<span class="brand-icon">{_icon("cloud")}</span><strong>FinOps</strong>'
             '<span class="appbar-divider" aria-hidden="true">/</span>'
             '<span>Cost intelligence</span></div>'
             f'<div class="appbar-context">{_icon("clock")}<span>Scheduled snapshot</span>'
-            '<span class="snapshot-label">Saved report</span></div>'
+            '<span class="snapshot-label" data-snapshot-age>Saved report</span></div>'
             '<div class="theme-switch" role="group" aria-label="Color theme">'
             '<button type="button" data-theme-choice="light" aria-pressed="false" disabled>Light</button>'
             '<button type="button" data-theme-choice="dark" aria-pressed="false" disabled>Dark</button>'

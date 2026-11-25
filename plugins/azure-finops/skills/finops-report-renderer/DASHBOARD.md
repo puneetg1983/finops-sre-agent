@@ -18,6 +18,11 @@ inline scope disclosure. The overview's Top services is a ranked horizontal bar 
 Azure service symbols and an expandable data table. The heading retains **FinOps: Dashboard**,
 with **Powered by Azure SRE Agent** below it. The layout is portal-inspired, not a copy of the
 authenticated SRE Agent portal or a claim of Microsoft endorsement.
+The header's **Last refreshed** card shows the snapshot time in UTC, a live "Updated N hours
+ago" age computed in the viewer's browser (amber after 36 hours, i.e. a missed daily run),
+the last cost date included, and the installed plugin version plus a 7-character build
+fingerprint. The fingerprint matches the revision `finops-update` records, so a stale build
+means the user should run **Update the FinOps setup** after installing a newer plugin.
 Overview ranks only the top 15 services. Its Browse every service button opens Cost
 explorer's Service dropdown, including zero-cost and smaller categories present in saved
 cost rows. A cost report is not resource inventory: web apps often share a plan's bill,
