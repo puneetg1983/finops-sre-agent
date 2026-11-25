@@ -165,8 +165,10 @@ sources = {
     },
     "containers": {
         "status": "unavailable",
+        "availability": "setup_required",
         "source": "AKS cost allocation",
-        "reason": "AKS allocation data is not enabled. Configure it separately with your cluster owner.",
+        "reason": "AKS clusters were found, but allocation data is not enabled.",
+        "next_step": "Configure cost allocation separately with your cluster owner, then refresh.",
     },
 }
 model = build_dashboard_model(
@@ -203,6 +205,28 @@ collecting data; the caller's subscription picker is not proof of agent access.
 
 ## Core inputs (unchanged helper outputs)
 
+### Explain missing and empty sources
+
+Keep the internal `status` contract (`ready`, `partial`, `unavailable`, `unsupported`).
+For non-data sources, supply an optional `availability` classification plus a precise `reason`:
+
+| `availability` | Report label | Evidence and action |
+|---|---|---|
+| `access_required` | Access needed | A permission denial for the agent's actual read identity; `next_step` names the least-privilege read access and scope. |
+| `setup_required` | Setup needed | A verified disabled feature, missing business inputs or unconnected read source; `next_step` explains how to configure it. A missing tool is not a permission denial. |
+| `not_applicable` | Not in scope | A complete successful scoped inventory found no relevant resources. Include its `source`, `refreshed_at`, `window`, matching `scope_summary`, and a reason stating what was checked. Never infer absence from no cost records or failed/incomplete reads. |
+| `read_failed` | Read failed | Retrieval failed or could not be validated; `next_step` explains the retry or repair needed. |
+
+Non-data states must omit `data`. `next_step` is required except for `not_applicable`.
+Unclassified failures display "Data not available"; omitted sources display "Not collected".
+All labels, reasons, next steps and provenance appear in the section and Data & scope.
+Do not claim subscription-wide absence when the report covers only selected resource groups.
+
+Complete successful empty row sources remain `ready` and display "No matching records",
+not "resources do not exist". Complete budget retrieval with `evaluate_budgets`' `no_budgets=true`
+displays "No budgets configured", without healthy-zero metrics, and explains how to create a budget.
+Failed or partially collected budget data must never use that state.
+
 | Source key | Data |
 |---|---|
 | `overview` | `summarize_cost_overview` output |
@@ -233,7 +257,7 @@ partial/unavailable source rather than zero. Raw provider normalization belongs 
 | `commitments` | `benefit`, `kind`, `quantity_unit`, `used_quantity`, `purchased_quantity`, `covered_cost_usd`, `eligible_cost_usd`, `realized_savings_usd`, `unused_cost_usd`, `expires_on`, `recommendation`. Ratios are calculated per row using matching units/periods, never averaged. Zero denominators show unknown. Usage must be between zero and purchased; covered cost between zero and eligible. |
 | `containers` | `cluster`, `namespace`, `workload`, `cost_usd`, `idle_usd`, `shared_usd`, `allocation_method`. Supply disjoint provider allocation buckets; do not add idle/shared cost twice. |
 | `unit-economics` | `business_unit`, `unit`, `units`, `cost_usd`, `allocation_method`. Cloud cost per outcome is computed with decimal arithmetic; zero units shows unavailable, negative units is an error. Volume and allocated cost MUST have the same scope and time window. |
-| `sustainability` | `scope`, `mtco2e`, `kwh`, `methodology`. Preserve source methodology and estimation caveats; do not invent energy for a carbon-only source. |
+| `sustainability` | `scope`, `mtco2e`, `methodology`; optional `kwh` may be omitted or null. Carbon-only sources are supported as ready: missing energy displays "Not supplied by source", not zero. Normalize documented provider emissions units to metric tonnes CO2 equivalent. Preserve the actual source period, methodology and estimation caveats; do not prorate subscription-only emissions to managed resource groups. |
 | `planning` | `scenario`, `baseline_usd`, `projected_usd`, `assumptions`, `term`, `breakeven`. Dollar delta is calculated; inputs must be actual supplied scenario estimates, not model-invented quotes. |
 | `governance` | `control`, `owner`, `observed`, `target`, `status`, `action`. Explicit supplied policy findings / measured scorecards; not an invented proprietary efficiency score or industry percentile. |
 

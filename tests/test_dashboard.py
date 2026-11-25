@@ -337,6 +337,92 @@ def test_additional_sources_reject_invalid_measurements(value):
                                            "methodology": "Provider estimate"}])})
 
 
+@pytest.mark.parametrize("energy", [{}, {"kwh": None}, {"kwh": 0}, {"kwh": 12.5}])
+def test_carbon_only_sustainability_preserves_emissions_and_missing_energy(energy):
+    model = build({"sustainability": envelope([
+        {"scope": SCOPE, "mtco2e": Decimal("0.044186"), "methodology": "Provider estimate", **energy},
+    ])})
+    source = tab(model, "sustainability")
+    assert source["status"] == "ready"
+    cells = source["sections"][0]["rows"][0]
+    assert cells[1] == "0.044186"
+    assert cells[2] == ("Not supplied by source" if energy.get("kwh") is None else str(energy["kwh"]))
+    assert cells[2] in renderer.render_report(model)
+
+
+@pytest.mark.parametrize("energy", [True, float("nan"), "12"])
+def test_supplied_energy_must_be_a_valid_measurement(energy):
+    with pytest.raises(ValueError):
+        build({"sustainability": envelope([
+            {"scope": SCOPE, "mtco2e": 1, "kwh": energy, "methodology": "Provider estimate"},
+        ])})
+
+
+def test_no_budgets_is_an_informative_empty_state_not_healthy_zero_metrics():
+    model = build({"budgets": envelope({"no_budgets": True, "budgets": []})})
+    source = tab(model, "budgets")
+    assert source["status"] == "ready"
+    assert source["displayStatus"] == "No budgets configured"
+    assert source["metrics"] == []
+    output = renderer.render_report(model)
+    assert "Create an Azure Cost Management budget" in output
+    assert "No budgets configured" in output
+    partial = build({"budgets": envelope({"no_budgets": True, "budgets": []},
+                                        status="partial", reason="A subscription read failed.")})
+    assert tab(partial, "budgets")["displayStatus"] == "Partial"
+    assert "No budgets configured" not in renderer.render_report(partial)
+    assert "No budgets are defined" not in renderer.render_report(partial)
+    assert "could not be confirmed for every scope" in renderer.render_report(partial)
+    assert tab(partial, "budgets")["metrics"] == []
+
+
+@pytest.mark.parametrize("availability,label", [
+    ("access_required", "Access needed"), ("setup_required", "Setup needed"),
+    ("read_failed", "Read failed"), ("not_applicable", "Not in scope"),
+])
+def test_missing_sources_display_evidence_and_next_step(availability, label):
+    source = envelope(None, status="unavailable", availability=availability,
+                      reason="Scoped inventory / retrieval evidence.", next_step="Ask the cluster owner.")
+    del source["data"]
+    model = build({"containers": source})
+    assert tab(model, "containers")["displayStatus"] == label
+    output = renderer.render_report(model)
+    assert label in output
+    assert "Scoped inventory / retrieval evidence." in output
+    assert "Ask the cluster owner." in output
+    assert any(row[0] == "Containers" and row[1] == label
+               for row in tab(model, "coverage")["sections"][0]["rows"])
+    assert tab(model, "containers")["metrics"] == []
+
+
+def test_resource_absence_requires_inventory_provenance_and_matching_scope():
+    with pytest.raises(ValueError, match="requires a source"):
+        build({"containers": {"status": "unavailable", "availability": "not_applicable",
+                              "reason": "No clusters in scope."}})
+    source = envelope(None, status="unavailable", availability="not_applicable",
+                      reason="No clusters in scope.", scope_summary=["/subscriptions/other"])
+    del source["data"]
+    with pytest.raises(ValueError, match="scope_summary"):
+        build({"containers": source})
+    source["scope_summary"] = [SCOPE]
+    source["data"] = []
+    with pytest.raises(ValueError, match="must omit data"):
+        build({"containers": source})
+
+
+def test_failed_or_uncollected_sources_are_not_resource_absence():
+    model = build({"containers": {"status": "unavailable", "reason": "Tool not connected."},
+                   "anomalies": envelope([])})
+    assert tab(model, "containers")["displayStatus"] == "Data not available"
+    assert tab(model, "commitments")["displayStatus"] == "Not collected"
+    assert tab(model, "anomalies")["displayStatus"] == "No matching records"
+    for source in model["tabs"]:
+        assert source.get("displayStatus") != "Not in scope"
+    with pytest.raises(ValueError, match="next_step"):
+        build({"containers": {"status": "unavailable", "availability": "access_required",
+                              "reason": "Read denied."}})
+
+
 def test_billing_keeps_currency_and_basis_and_planning_computes_delta():
     model = build({
         "billing": envelope([{"business_unit": "IT", "basis": "credit", "amount": -50,
@@ -396,7 +482,7 @@ def test_dashboard_icons_and_mobile_section_selector_are_self_contained():
     assert "Copyright (c) 2020 Microsoft Corporation" in output
     assert '<label for="section-select">Report section</label>' in output
     assert output.count("<option ") == 17
-    assert "Overview - Unavailable" in output
+    assert "Overview - Not collected" in output
     assert 'class="dashboard"' in output
     assert '<script src=' not in output
 

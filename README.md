@@ -32,7 +32,7 @@ subscriptions, with per-subscription cost grants and separate agent/connector ac
 Missing access leaves setup pending, never silently narrowing the selection.
 
 Optional inputs (such as namespace allocation, business volumes, carbon data and billing exports)
-show explicit unavailable/partial states until connected, never made-up metrics.
+show explicit setup, access or data gaps until connected, never made-up metrics.
 See the [Cloudability reporting research and coverage matrix](docs/CLOUDABILITY-COVERAGE.md).
 Say the setup sentence again to repair or update; old schedules are retired only after the new
 dashboard saves successfully. Historical reports are not deleted.
@@ -59,6 +59,13 @@ permissions—for example container allocation, business volumes, sustainability
 billing exports. When a source is missing or incomplete, its section explains the gap instead of
 presenting invented values or a healthy zero. Recommendations are advisory; the dashboard does not
 change resources or automatically realize savings.
+
+Missing-data labels explain the difference: **Access needed**, **Setup needed**, **Read failed**,
+or **Not collected**. **Not in scope** means a complete scoped inventory confirmed that the relevant
+resources do not exist in the report's selected scope, not necessarily the whole subscription.
+Successful empty results show **No matching records**, and successful budget checks with no budgets
+show **No budgets configured** with a setup step. Sustainability can show sourced carbon emissions
+without energy data; missing energy is labeled **Not supplied by source**, never zero.
 
 ### Using the dashboard
 

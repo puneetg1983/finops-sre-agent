@@ -13,6 +13,10 @@ Microsoft Fluent system icons, and authorized Microsoft product artwork are inli
 no external scripts or network dependencies. Product artwork has separate terms; see DASHBOARD.md.
 Source gaps retain their own visible tab and reason. Never replace a failed analysis with a
 healthy zero. All report types use the shared light/dark theme.
+Follow DASHBOARD.md's `availability` and `next_step` contract to distinguish access needed,
+setup needed, failed reads and confirmed absence in the checked scope. Complete empty budget
+results show "No budgets configured"; partial reads never imply absence. Sustainability accepts
+carbon-only measurements with documented units and source period; missing kWh is not zero.
 
 Overview and Cost explorer default to 30 inclusive UTC days and can use a preloaded 90-day
 history or custom dates when both daily, scope-filtered cost queries completed. Other sections

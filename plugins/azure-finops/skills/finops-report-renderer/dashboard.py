@@ -39,6 +39,13 @@ _ADAPTERS = {
     "optimization": _models.build_cost_optimization_model,
 }
 
+_AVAILABILITY_LABELS = {
+    "access_required": "Access needed",
+    "setup_required": "Setup needed",
+    "not_applicable": "Not in scope",
+    "read_failed": "Read failed",
+}
+
 
 def _number(row, key):
     if key not in row or row[key] is None:
@@ -168,6 +175,23 @@ def _planning(data):
     )]}
 
 
+def _sustainability(data):
+    rows = []
+    for row in _rows(data):
+        energy = row.get("kwh")
+        rows.append([
+            _text(row, "scope"), _models._number(_number(row, "mtco2e")),
+            "Not supplied by source" if energy is None else _models._number(_number(row, "kwh")),
+            _text(row, "methodology"),
+        ])
+    return {"sections": [_section(
+        "Environmental impact", ["Resource / scope", "Emissions (MTCO2e)", "Energy (kWh)", "Methodology"],
+        sorted(rows), "Provider or documented model estimates only. Carbon-only data is supported; "
+        "missing energy is not zero. Preserve the provider's period and convert emissions to metric "
+        "tonnes CO2 equivalent using its documented units. No dollar-to-carbon conversion.",
+    )]}
+
+
 def _extra(tab_id, data):
     if tab_id == "allocation":
         return _allocation(data)
@@ -177,6 +201,8 @@ def _extra(tab_id, data):
         return _units(data)
     if tab_id == "planning":
         return _planning(data)
+    if tab_id == "sustainability":
+        return _sustainability(data)
     definitions = {
         "billing": ("Billing reconciliation inputs", (
             ("business_unit", "Business unit", "text"), ("basis", "Cost basis / charge", "text"),
@@ -203,11 +229,6 @@ def _extra(tab_id, data):
             ("allocation_method", "Allocation method", "text"),
         ), "Use AKS cost allocation / OpenCost data; idle and shared costs must not be double counted. "
            "A cluster resource bill alone cannot establish namespace or pod allocation."),
-        "sustainability": ("Environmental impact", (
-            ("scope", "Resource / scope", "text"), ("mtco2e", "Emissions (MTCO2e)", "number"),
-            ("kwh", "Energy (kWh)", "number"), ("methodology", "Methodology", "text"),
-        ), "Provider or documented model estimates only. No dollar-to-carbon conversion; "
-           "do not invent energy where the provider supplies only emissions."),
         "governance": ("Accountability and scorecards", (
             ("control", "Control / metric", "text"), ("owner", "Owner", "text"),
             ("observed", "Observed", "text"), ("target", "Target", "text"),
@@ -535,8 +556,19 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
         reason = reason or ("Source not connected or not collected; configure this input." if not envelope else "")
         source = _models._text(envelope.get("source"), "source", default="Not collected")
         source_time = _models._text(envelope.get("refreshed_at"), "refreshed_at")
+        availability = envelope.get("availability")
+        next_step = _models._text(envelope.get("next_step"), "next_step").strip()
+        if availability is not None:
+            if availability not in _AVAILABILITY_LABELS or status not in {"unavailable", "unsupported"}:
+                raise ValueError(f"{tab_id} availability requires a recognized non-data state")
+            if not reason.strip():
+                raise ValueError(f"{tab_id} availability requires a reason")
+            if availability != "not_applicable" and not next_step:
+                raise ValueError(f"{tab_id} availability requires a next_step")
+            if envelope.get("data") is not None:
+                raise ValueError(f"{tab_id} non-data state must omit data")
         panel = {"metrics": [], "sections": []}
-        if status in {"ready", "partial"}:
+        if status in {"ready", "partial"} or availability == "not_applicable":
             if not source.strip() or source == "Not collected":
                 raise ValueError(f"{tab_id} requires a source")
             source_time = _timestamp(source_time, f"{tab_id}.refreshed_at")
@@ -548,6 +580,7 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
             supplied = _models._strings(envelope.get("scope_summary"), "scope_summary")
             if {s.casefold() for s in supplied} != {s.casefold() for s in scopes}:
                 raise ValueError(f"{tab_id} scope_summary must match dashboard scope")
+        if status in {"ready", "partial"}:
             if envelope.get("data") is None:
                 raise ValueError(f"{tab_id} data is required")
             if tab_id == "overview" and not any(
@@ -590,13 +623,38 @@ def build_dashboard_model(sources, *, refreshed_at, scope_summary, window,
             if panel.get("partial"):
                 status = "partial"
             all_warnings.extend(f"{title}: {warning}" for warning in panel.get("warnings", []))
+        display_status = _AVAILABILITY_LABELS.get(availability, {
+            "ready": "Ready", "partial": "Partial", "unavailable": "Data not available",
+            "unsupported": "Not supported",
+        }[status])
+        if not envelope:
+            display_status = "Not collected"
+        if status in {"ready", "partial"} and tab_id == "budgets" and envelope["data"].get("no_budgets") is True:
+            if envelope["data"].get("budgets"):
+                raise ValueError("no_budgets cannot accompany evaluated budget rows")
+            panel["metrics"] = []
+            panel["chart"] = None
+            panel["sections"] = [section for section in panel["sections"] if section["title"] == "Budget status"]
+            if status == "ready":
+                display_status = "No budgets configured"
+                reason = "No budgets are configured in the checked report scope."
+                next_step = "Create an Azure Cost Management budget for this scope, then refresh the report."
+            else:
+                panel["sections"][0]["emptyMessage"] = (
+                    "Budget retrieval is incomplete. No evaluated rows were collected; "
+                    "budget configuration could not be confirmed for every scope."
+                )
+        elif status == "ready" and isinstance(envelope["data"], list) and not envelope["data"]:
+            display_status = "No matching records"
         if status != "ready":
             any_partial = True
-        source_period = " to ".join(envelope["window"]) if status in {"ready", "partial"} else period
-        coverage.append([title, status, source, source_time or "Unknown", source_period, reason])
+        source_period = " to ".join(envelope["window"]) if status in {"ready", "partial"} or availability == "not_applicable" else period
+        coverage.append([title, display_status, source, source_time or "Unknown", source_period,
+                         " ".join(value for value in (reason, next_step) if value)])
         tabs.append({
             "id": tab_id, "title": title, "description": description,
             "status": status, "reason": reason, "source": source,
+            "displayStatus": display_status, "nextStep": next_step,
             "refreshedAt": source_time, "period": source_period,
             "metrics": panel.get("metrics", []), "chart": panel.get("chart"),
             "sections": panel.get("sections", []),

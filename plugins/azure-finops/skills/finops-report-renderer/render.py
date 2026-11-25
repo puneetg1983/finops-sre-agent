@@ -24,7 +24,7 @@ _TONES = {"neutral", "good", "warning", "critical"}
 _STATUS_LABELS = {
     "ready": "Ready",
     "partial": "Partial",
-    "unavailable": "Unavailable",
+    "unavailable": "Data not available",
     "unsupported": "Not supported",
 }
 _LIVE_REPORT_MAX_BYTES = 10_000_000
@@ -1426,7 +1426,7 @@ def _dashboard(model, intro=""):
         title, status = _required_text(tab, "title"), _required_text(tab, "status")
         if status not in _STATUS_LABELS:
             raise ValueError("invalid dashboard tab status")
-        status_label = _STATUS_LABELS[status]
+        status_label = _escape(tab.get("displayStatus") or _STATUS_LABELS[status])
         icon = _TAB_ICONS.get(key, "chart-multiple")
         group = {"overview": "Cost analysis", "rightsizing": "Efficiency",
                  "governance": "Operations", "coverage": "Report information"}.get(key)
@@ -1442,6 +1442,7 @@ def _dashboard(model, intro=""):
             f'<option value="{index}">{_escape(title)} - {status_label}</option>'
         )
         panel_warnings = str(tab.get("reason") or "")
+        next_step = str(tab.get("nextStep") or "")
         panel_body = _dashboard_chart(tab) + _sections(tab, heading_level=3, id_prefix=key)
         if key == "overview" and model.get("costHistory", {}).get("available"):
             sections = tab["sections"]
@@ -1470,7 +1471,9 @@ def _dashboard(model, intro=""):
             f'<p class="provenance">Source: {_escape(tab.get("source"))} '
             f'<span aria-hidden="true"> | </span> As of: {_escape(tab.get("refreshedAt") or "Unknown")} '
             f'<span aria-hidden="true"> | </span> <span class="source-period">{_escape(tab.get("period"))}</span></p>'
-            + (f'<aside class="warnings">{_escape(panel_warnings)}</aside>' if panel_warnings else "")
+            + (f'<aside class="source-state"><p>{_escape(panel_warnings)}</p>'
+               + (f'<p><strong>Next step:</strong> {_escape(next_step)}</p>' if next_step else "")
+               + '</aside>' if panel_warnings else "")
             + '</section>' + (_metrics(tab) if tab.get("metrics") else "")
             + panel_body + '</div>'
         )
