@@ -129,6 +129,20 @@ def test_usage_details_fallback_accepts_foundry_tools_label():
     })
 
 
+def test_ai_provider_fallback_handles_subscription_level_resource_ids():
+    item = {
+        "cost": 42.0,
+        "resourceId": "/SUBSCRIPTIONS/s/PROVIDERS/Microsoft.CognitiveServices/accounts/ai",
+        "serviceName": "Other",
+        "meterName": "gpt-4o Tokens",
+    }
+    assert attribute.is_ai_cost_item(item)
+    assert attribute_ai_costs([item])["total_ai_usd"] == 42.0
+    assert not attribute.is_ai_cost_item({
+        **item, "resourceId": "/subscriptions/s/providers/Microsoft.App/agents/ai",
+    })
+
+
 def test_non_ai_line_is_ignored():
     out = attribute_ai_costs([
         _line(100.0, name="gpt-4o Tokens"),

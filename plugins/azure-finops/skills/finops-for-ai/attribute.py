@@ -15,9 +15,9 @@ category literally named "Azure OpenAI" DROPS Foundry-hosted model spend. This m
 meter category. It also covers `Microsoft.MachineLearningServices` (Foundry hub/project compute,
 managed online endpoints, fine-tuning) and Foundry Tools such as Azure SRE Agent units.
 
-Line-item shape (one dict per cost row, already flattened by the skill; query_costs rows get
-consumedService from the resource type's provider namespace, and the UsageDetails fallback
-projects consumedService + meterSubCategory + meterName):
+Line-item shape (one dict per cost row, already flattened by the skill; query_costs rows may
+use a resource ID or resource type to identify the provider namespace, and the UsageDetails
+fallback projects consumedService + meterSubCategory + meterName):
 
     {
         "cost": 12.34,                                   # USD
@@ -109,13 +109,28 @@ def _service_family(consumed_service, service_name=None, meter_category=None) ->
     return _SERVICE_FAMILY.get(_norm(consumed_service))
 
 
-def is_ai_cost_item(item) -> bool:
-    """Whether a UsageDetails or Cost Management row belongs in AI spend."""
+def _item_service_family(item):
+    consumed_service = item.get("consumedService")
+    if not consumed_service:
+        consumed_service = str(item.get("resourceType") or "").split("/", 1)[0]
+    if not consumed_service:
+        parts = str(item.get("resourceId") or "").strip("/").split("/")
+        if len(parts) >= 2 and _norm(parts[0]) == "subscriptions":
+            index = 2
+            if len(parts) > index and _norm(parts[index]) == "resourcegroups":
+                index += 2
+            if len(parts) > index + 3 and _norm(parts[index]) == "providers":
+                consumed_service = parts[index + 1]
     return _service_family(
-        item.get("consumedService"),
+        consumed_service,
         item.get("serviceName") or item.get("service_name"),
         item.get("meterCategory") or item.get("meter_category"),
-    ) is not None
+    )
+
+
+def is_ai_cost_item(item) -> bool:
+    """Whether a UsageDetails or Cost Management row belongs in AI spend."""
+    return _item_service_family(item) is not None
 
 
 def ai_resource_types(resource_types):
@@ -249,11 +264,7 @@ def attribute_ai_costs(line_items=None, *, resource_kinds=None):
         cost = item.get("cost")
         if not isinstance(cost, (int, float)):
             continue
-        family = _service_family(
-            item.get("consumedService"),
-            item.get("serviceName") or item.get("service_name"),
-            item.get("meterCategory") or item.get("meter_category"),
-        )
+        family = _item_service_family(item)
         if family is None:
             continue  # not an AI service family — skip defensively
 

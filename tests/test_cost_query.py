@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import re
 import sys
+import textwrap
 from decimal import Decimal
 from datetime import date, timedelta
 from collections import Counter
@@ -47,6 +49,62 @@ def _args(scope, start="2026-11-01", end="2026-11-02", **extra):
 
 
 DAILY = ["PreTaxCostUSD", "UsageDate", "ResourceId", "MeterCategory", "Currency"]
+
+
+def test_documented_ai_query_plans_and_attributes_scoped_costs():
+    ai_skill = SKILL.parent / "finops-for-ai"
+    spec = importlib.util.spec_from_file_location("ai_attribute", ai_skill / "attribute.py")
+    attribute = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(attribute)
+    text = (ai_skill / "SKILL.md").read_text(encoding="utf-8")
+    blocks = re.findall(
+        r"^[ \t]*```python\n(.*?)^[ \t]*```[ \t]*$", text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    query_example = next(block for block in blocks if "ai_queries = plan_cost_queries(" in block)
+    agent = f"{RG}/providers/Microsoft.App/agents/sre"
+    model = f"{RG}/providers/Microsoft.CognitiveServices/accounts/foundry"
+    ml = f"{RG}/providers/Microsoft.MachineLearningServices/workspaces/ml"
+    other = f"{RG}/providers/Microsoft.App/agents/other"
+    response = _result(
+        ["PreTaxCostUSD", "ResourceId", "ServiceName", "MeterCategory",
+         "MeterSubCategory", "Meter", "Currency"],
+        [
+            [241.21, agent, "Foundry Tools", "Foundry Tools", "", "SRE Agent Unit", "USD"],
+            [100, model, "Other", "Other", "gpt-4o", "gpt-4o Tokens", "USD"],
+            [75, ml, "Other", "Other", "", "Compute vCPU", "USD"],
+            [500, other, "Other", "Other", "", "Non-AI charge", "USD"],
+        ],
+    )
+    plans = []
+
+    def plan(*args, **kwargs):
+        plans.extend(cost_query.plan_cost_queries(*args, **kwargs))
+        return plans
+
+    def prepare(_results, scopes, **kwargs):
+        return cost_query.prepare_cost_query(
+            [{"arguments": plans[0], "result": response}], scopes, **kwargs
+        )
+
+    context = {
+        "plan_cost_queries": plan, "prepare_cost_query": prepare,
+        "managed_resources": [RG], "mg_descendants": {},
+        "START": "2026-11-01", "END": "2026-11-30", "TODAY": "2026-11-30",
+        "ai_types": [
+            "Microsoft.App/agents", "Microsoft.CognitiveServices/accounts",
+            "Microsoft.MachineLearningServices/workspaces",
+        ],
+        "ai_results": [],
+    }
+    exec(compile(textwrap.dedent(query_example), str(ai_skill / "SKILL.md"), "exec"), context)
+
+    result = attribute.attribute_ai_costs(context["ai_line_items"])
+    assert result["total_ai_usd"] == 416.21
+    assert {row["meter_type"]: row["monthly_usd"] for row in result["by_meter_type"]} == {
+        "agent_service": 241.21, "model_token": 100.0, "compute": 75.0,
+    }
+    assert result["by_model"][0]["model"] == "gpt-4o"
 
 
 def test_plan_expands_management_groups_and_never_queries_broader_scope():

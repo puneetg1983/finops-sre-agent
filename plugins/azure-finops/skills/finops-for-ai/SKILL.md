@@ -96,17 +96,19 @@ execution and throttling backoff, split on truncation, and prepared separately:
    ```python
    ai_queries = plan_cost_queries(managed_resources, management_group_expansions=mg_descendants,
                                   start=START, end=END, as_of=TODAY,
-                                  group_by="ResourceId,ResourceType,ServiceName,MeterCategory,MeterSubCategory,Meter",
+                                  group_by="ResourceId,ServiceName,MeterCategory,MeterSubCategory,Meter",
                                   filter_dimension="ResourceType", filter_values=ai_types)
    prepared = prepare_cost_query(ai_results, managed_resources,
                                  management_group_expansions=mg_descendants, window=(START, END))
    ai_line_items = prepared["included_rows"]
    ```
 
-   Each row carries `cost`, `resourceId`, `serviceName`, `meterCategory`, `meterSubCategory`, `meterName`, and
-   `consumedService` (the resource type's provider namespace), which is the shape `attribute.py`
-   expects. Classify only `included_rows`; use the returned coverage/partial fields directly; do not
-   merge, de-duplicate, or scope-filter rows in model reasoning.
+   The connector permits at most five grouping dimensions. Each row carries `cost`, `resourceId`,
+   `serviceName`, `meterCategory`, `meterSubCategory` and `meterName`. The classifier derives the
+   provider namespace from the resource ID when `consumedService` is absent, preserving the
+   Cognitive Services and Machine Learning fallback. Classify only `included_rows`; use the
+   returned coverage/partial fields directly; do not merge, de-duplicate, or scope-filter rows in
+   model reasoning.
 
 **Fallback (only when `finops-managed-scope` section 4 requires it):** follow the canonical
 Consumption UsageDetails transport contract in `finops-managed-scope` section 5 with this projection.
